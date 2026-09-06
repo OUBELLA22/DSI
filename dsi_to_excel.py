@@ -85,6 +85,76 @@ SHEET_NAMES = {
 }
 
 
+def read_xlsx_sheet(path, sheet_index=0):
+    """Read a worksheet from an existing .xlsx into (headers, rows) of strings.
+
+    Stdlib only. Returns the first sheet's first row as headers and the rest as
+    data rows, trimming fully-empty trailing columns.
+    """
+    import xml.etree.ElementTree as ET
+    M = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+
+    def q(t):
+        return f"{{{M}}}{t}"
+
+    def colnum(ref):
+        letters = re.match(r"[A-Z]+", ref).group()
+        n = 0
+        for ch in letters:
+            n = n * 26 + (ord(ch) - 64)
+        return n
+
+    with zipfile.ZipFile(path) as z:
+        sst = []
+        if "xl/sharedStrings.xml" in z.namelist():
+            root = ET.fromstring(z.read("xl/sharedStrings.xml"))
+            for si in root:
+                sst.append("".join(t.text or "" for t in si.iter(q("t"))))
+
+        # find worksheet file for the requested index
+        wb = ET.fromstring(z.read("xl/workbook.xml"))
+        names = [s.get("name") for s in wb.iter(q("sheet"))]
+        sheet_file = f"xl/worksheets/sheet{sheet_index + 1}.xml"
+
+        ws = ET.fromstring(z.read(sheet_file))
+        grid = {}
+        maxc = maxr = 0
+        for row in ws.iter(q("row")):
+            for c in row.findall(q("c")):
+                ref = c.get("r")
+                t = c.get("t")
+                v = c.find(q("v"))
+                istext = c.find(q("is"))
+                if t == "s" and v is not None:
+                    val = sst[int(v.text)]
+                elif istext is not None:
+                    val = "".join(x.text or "" for x in istext.iter(q("t")))
+                elif v is not None:
+                    val = v.text or ""
+                else:
+                    val = ""
+                r = int(re.search(r"\d+", ref).group())
+                cn = colnum(ref)
+                grid[(r, cn)] = val
+                maxc = max(maxc, cn)
+                maxr = max(maxr, r)
+
+    matrix = []
+    for r in range(1, maxr + 1):
+        matrix.append([str(grid.get((r, c), "") or "") for c in range(1, maxc + 1)])
+    # trim fully-empty trailing columns
+    while matrix and all(not row[-1] for row in matrix):
+        for row in matrix:
+            row.pop()
+        if not matrix[0]:
+            break
+    if not matrix:
+        return [], []
+    headers = matrix[0]
+    rows = matrix[1:]
+    return headers, rows
+
+
 def parse_dsi(path):
     """Return (meta, sections) where sections is list of (name, headers, rows)."""
     with open(path, encoding="utf-8") as fh:
@@ -104,16 +174,19 @@ def parse_dsi(path):
     # --- split into sections ---
     idx = [i for i, l in enumerate(raw) if l.startswith("%")]
     sections = []
+    raw_circuit = []
     for k, start in enumerate(idx):
         name = raw[start][1:].strip()
         end = idx[k + 1] if k + 1 < len(idx) else len(raw)
         data = [l for l in raw[start + 1:end]
                 if l and not l.startswith("!")]
+        if name == "Harness circuit information":
+            raw_circuit = [l.split(DELIM) for l in data]
         if not data or name not in SCHEMAS:
             continue
         headers, rows = build_rows(name, data)
         sections.append((name, headers, rows))
-    return meta, sections
+    return meta, sections, raw_circuit
 
 
 def build_rows(name, data):
@@ -174,7 +247,9 @@ def cell_xml(ref, value, style, force_text=False):
             f'<is><t xml:space="preserve">{escape(value)}</t></is></c>')
 
 
-def sheet_xml(headers, rows, force_text_cols):
+def sheet_xml(headers, rows, force_text_cols, centered_cols=None, narrow_cols=None):
+    centered_cols = centered_cols or set()
+    narrow_cols = narrow_cols or set()
     ncols = len(headers)
     last_col = col_letter(ncols)
     nrows = len(rows) + 1
@@ -188,7 +263,10 @@ def sheet_xml(headers, rows, force_text_cols):
                 widths[i] = len(v)
     cols = ['<cols>']
     for i, w in enumerate(widths, 1):
-        width = min(max(w + 2, 9), 60)
+        if (i - 1) in narrow_cols:
+            width = max(len(str(headers[i - 1])) + 2, 7)
+        else:
+            width = min(max(w + 2, 9), 60)
         cols.append(f'<col min="{i}" max="{i}" width="{width}" customWidth="1"/>')
     cols.append('</cols>')
 
@@ -210,12 +288,14 @@ def sheet_xml(headers, rows, force_text_cols):
         hdr.append(cell_xml(f"{col_letter(i)}1", str(h), 2, force_text=True))
     hdr.append('</row>')
     out.append("".join(hdr))
-    # data rows (style 1 = normal border)
+    # data rows (style 1 = normal border, style 3 = centered)
     for ri, row in enumerate(rows, 2):
         cells = [f'<row r="{ri}">']
         for ci, v in enumerate(row, 1):
-            ft = (ci - 1) in force_text_cols
-            cells.append(cell_xml(f"{col_letter(ci)}{ri}", v, 1, force_text=ft))
+            col0 = ci - 1
+            ft = col0 in force_text_cols
+            style = 3 if col0 in centered_cols else 1
+            cells.append(cell_xml(f"{col_letter(ci)}{ri}", v, style, force_text=ft))
         cells.append('</row>')
         out.append("".join(cells))
     out.append('</sheetData>')
@@ -276,18 +356,68 @@ def styles_xml():
         '<bottom style="thin"><color rgb="FFD9D9D9"/></bottom><diagonal/></border>'
         '</borders>'
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-        '<cellXfs count="3">'
+        '<cellXfs count="4">'
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>'
         '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" '
         'applyFont="1" applyFill="1" applyBorder="1">'
         '<alignment horizontal="center" vertical="center"/></xf>'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" '
+        'applyBorder="1" applyAlignment="1">'
+        '<alignment horizontal="center"/></xf>'
         '</cellXfs>'
         '</styleSheet>'
     )
 
 
-def build_workbook(path, meta, sections, out_path):
+# In the raw "Harness circuit information" record, option codes start at this
+# field index; field 26 holds the human-readable description.
+CIRCUIT_DESC_FIELD = 26
+CIRCUIT_OPTION_START = 36
+_OPTION_RE = re.compile(r"^[A-Z]\d[A-Z0-9]{3}$|^[A-Z0-9]{5}$")
+
+
+def build_option_matrix(raw_records):
+    """Build the Ref x Option-code presence matrix from raw circuit records.
+
+    Rows   = each circuit (Reference + Description)
+    Cols   = every unique option code (de-duplicated, sorted)
+    Cell   = 'X' if the code is in that circuit's option list, else empty.
+
+    We read straight from the raw DSI fields so only genuine option codes are
+    used (skipping flags like 'true'/'false' and empty positions).
+    """
+    if not raw_records:
+        return None
+
+    circuits = []
+    all_codes = []
+    seen = set()
+    for f in raw_records:
+        ref = f[0].strip() if f else ""
+        desc = f[CIRCUIT_DESC_FIELD].strip() if len(f) > CIRCUIT_DESC_FIELD else ""
+        codes = set()
+        for c in f[CIRCUIT_OPTION_START:]:
+            c = c.strip()
+            if not c or c.lower() in ("true", "false"):
+                continue
+            codes.add(c)
+            if c not in seen:
+                seen.add(c)
+                all_codes.append(c)
+        circuits.append((ref, desc, codes))
+    all_codes.sort()
+
+    hdr = ["Reference", "Description"] + all_codes
+    out_rows = []
+    for ref, desc, codes in circuits:
+        row = [ref, desc] + ["X" if c in codes else "" for c in all_codes]
+        out_rows.append(row)
+    return hdr, out_rows
+
+
+def build_workbook(path, meta, sections, out_path, raw_circuit=None,
+                   extra_sheets=None):
     # Build an "Overview" sheet as the first sheet
     overview_rows = [[k, v] for k, v in meta.items()]
     overview_rows.append(["", ""])
@@ -295,6 +425,20 @@ def build_workbook(path, meta, sections, out_path):
     for name, headers, rows in sections:
         overview_rows.append([SHEET_NAMES.get(name, name), str(len(rows))])
     sheets = [("Overview", ["Property", "Value"], overview_rows, set())]
+
+    # columns to center/narrow, keyed by sheet display name
+    center_map = {}
+    narrow_map = {}
+
+    # Option-code presence matrix (Ref x Codes, X where present)
+    matrix = build_option_matrix(raw_circuit)
+    if matrix:
+        mh, mr = matrix
+        # keep Reference as text; X columns are plain text too
+        sheets.append(("Option Matrix", mh, mr, set(range(len(mh)))))
+        # center + narrow every option-code column (index 2 onward)
+        center_map["Option Matrix"] = set(range(2, len(mh)))
+        narrow_map["Option Matrix"] = set(range(2, len(mh)))
 
     for name, headers, rows in sections:
         # force-text columns: identifiers/codes that look numeric but must stay text
@@ -305,6 +449,28 @@ def build_workbook(path, meta, sections, out_path):
                                      "reference", "node", "name")):
                 ftc.add(i)
         sheets.append((SHEET_NAMES.get(name, name), headers, rows, ftc))
+
+    # externally supplied sheets (e.g. the uploaded PTA workbook)
+    for sname, sheaders, srows in (extra_sheets or []):
+        ftc = set()
+        center = set()
+        narrow = set()
+        for i, h in enumerate(sheaders):
+            hl = h.lower()
+            if any(t in hl for t in ("id", "code", "rev", "part", "reference",
+                                     "node", "name")):
+                ftc.add(i)
+            # single-code X-mark columns: short header, center + narrow
+            if len(h) <= 6 and not h.lower().startswith(("option", "circuit",
+                                                          "rev", "f")):
+                center.add(i)
+                narrow.add(i)
+                ftc.add(i)
+        sheets.append((sname, sheaders, srows, ftc))
+        if center:
+            center_map[sname] = center
+        if narrow:
+            narrow_map[sname] = narrow
 
     # de-duplicate / trim sheet names to <=31 chars
     used = {}
@@ -387,7 +553,9 @@ def build_workbook(path, meta, sections, out_path):
         # sheets + tables
         for i, (nm, headers, rows, ftc) in enumerate(sheets, 1):
             z.writestr(f"xl/worksheets/sheet{i}.xml",
-                       sheet_xml(headers, rows, ftc))
+                       sheet_xml(headers, rows, ftc,
+                                 centered_cols=center_map.get(nm),
+                                 narrow_cols=narrow_map.get(nm)))
             z.writestr(f"xl/worksheets/_rels/sheet{i}.xml.rels",
                        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                        '<Relationships xmlns="http://schemas.openxmlformats.org/'
@@ -406,8 +574,21 @@ def build_workbook(path, meta, sections, out_path):
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else "HQRNESS2 TEST.dsi"
     out = sys.argv[2] if len(sys.argv) > 2 else "HARNESS2_TEST.xlsx"
-    meta, sections = parse_dsi(src)
-    sheets = build_workbook(src, meta, sections, out)
+    meta, sections, raw_circuit = parse_dsi(src)
+
+    # optional: embed sheets from extra .xlsx files given as "Name=path.xlsx"
+    extra_sheets = []
+    for arg in sys.argv[3:]:
+        if "=" in arg:
+            sname, spath = arg.split("=", 1)
+        else:
+            sname, spath = "PTA", arg
+        h, r = read_xlsx_sheet(spath)
+        extra_sheets.append((sname, h, r))
+        print(f"Embedding sheet '{sname}' from {spath}: {len(h)} cols, {len(r)} rows")
+
+    sheets = build_workbook(src, meta, sections, out, raw_circuit,
+                            extra_sheets=extra_sheets)
     print(f"Wrote {out}")
     print(f"Metadata fields: {len(meta)}")
     for nm, headers, rows, ftc in sheets:
