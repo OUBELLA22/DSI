@@ -175,6 +175,8 @@ def parse_dsi(path):
     idx = [i for i, l in enumerate(raw) if l.startswith("%")]
     sections = []
     raw_circuit = []
+    raw_wires = []
+    raw_multicores = []
     for k, start in enumerate(idx):
         name = raw[start][1:].strip()
         end = idx[k + 1] if k + 1 < len(idx) else len(raw)
@@ -182,11 +184,15 @@ def parse_dsi(path):
                 if l and not l.startswith("!")]
         if name == "Harness circuit information":
             raw_circuit = [l.split(DELIM) for l in data]
+        elif name == "Harness wire specification":
+            raw_wires = list(data)
+        elif name == "Harness multicores":
+            raw_multicores = list(data)
         if not data or name not in SCHEMAS:
             continue
         headers, rows = build_rows(name, data)
         sections.append((name, headers, rows))
-    return meta, sections, raw_circuit
+    return meta, sections, raw_circuit, raw_wires, raw_multicores
 
 
 def build_rows(name, data):
@@ -416,8 +422,74 @@ def build_option_matrix(raw_records):
     return hdr, out_rows
 
 
+# Field positions inside a raw "Harness wire specification" record.
+WIRE_F = {
+    "name": 0, "option": 1, "spec": 2, "color": 3, "size": 4, "material": 5,
+    "from_conn": 8, "from_cav": 10, "from_term": 11,
+    "to_conn": 12, "to_cav": 14, "to_term": 15,
+    "len_min": 24, "len_max": 25, "signal": 28, "part": 30,
+}
+
+
+def build_connector_sheet(raw_wires, multicores):
+    """One row per connector endpoint of every wire.
+
+    For each wire we emit two rows (its FROM side and its TO side) so every
+    connector can be seen with the wires landing on it: connector, cavity,
+    the wire and where it goes, plus part number, twist, material, cross
+    section, colour and type — all pulled from the Wire Specification data.
+    """
+    if not raw_wires:
+        return None
+
+    def g(f, key):
+        i = WIRE_F[key]
+        return f[i].strip() if i < len(f) else ""
+
+    def twist_of(f):
+        # explicit twist/direction flag lives at field 20 in this schema
+        val = f[20].strip() if len(f) > 20 else ""
+        if val and val.lower() != "neither":
+            return val
+        return ""
+
+    hdr = ["Connector", "Cavity", "Term", "Wire", "Goes To", "To Cavity",
+           "Signal / Family", "Cross Section (mm2)", "Color", "Type / Spec",
+           "Material", "Twist", "Length (mm)", "Part Number"]
+    rows = []
+    for line in raw_wires:
+        f = line.split(DELIM)
+        name = g(f, "name")
+        color = g(f, "color")
+        size = g(f, "size")
+        spec = g(f, "spec")
+        material = g(f, "material")
+        signal = g(f, "signal")
+        part = g(f, "part")
+        length = g(f, "len_max") or g(f, "len_min")
+        twist = twist_of(f)
+        fc, fcav, fterm = g(f, "from_conn"), g(f, "from_cav"), g(f, "from_term")
+        tc, tcav, tterm = g(f, "to_conn"), g(f, "to_cav"), g(f, "to_term")
+
+        if fc:
+            rows.append([fc, fcav, fterm, name, tc, tcav, signal, size,
+                         color, spec, material, twist, length, part])
+        if tc:
+            rows.append([tc, tcav, tterm, name, fc, fcav, signal, size,
+                         color, spec, material, twist, length, part])
+
+    def cav_key(v):
+        try:
+            return (0, int(v))
+        except ValueError:
+            return (1, v)
+
+    rows.sort(key=lambda r: (r[0], cav_key(r[1])))
+    return hdr, rows
+
+
 def build_workbook(path, meta, sections, out_path, raw_circuit=None,
-                   extra_sheets=None):
+                   raw_wires=None, raw_multicores=None, extra_sheets=None):
     # Build an "Overview" sheet as the first sheet
     overview_rows = [[k, v] for k, v in meta.items()]
     overview_rows.append(["", ""])
@@ -439,6 +511,12 @@ def build_workbook(path, meta, sections, out_path, raw_circuit=None,
         # center + narrow every option-code column (index 2 onward)
         center_map["Option Matrix"] = set(range(2, len(mh)))
         narrow_map["Option Matrix"] = set(range(2, len(mh)))
+
+    # Connector sheet (built from Wire Specification data)
+    conn = build_connector_sheet(raw_wires, raw_multicores)
+    if conn:
+        ch, cr = conn
+        sheets.append(("Connector", ch, cr, {0, 1, 2, 3, 4, 5, 13}))
 
     for name, headers, rows in sections:
         # force-text columns: identifiers/codes that look numeric but must stay text
@@ -574,7 +652,7 @@ def build_workbook(path, meta, sections, out_path, raw_circuit=None,
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else "HQRNESS2 TEST.dsi"
     out = sys.argv[2] if len(sys.argv) > 2 else "HARNESS2_TEST.xlsx"
-    meta, sections, raw_circuit = parse_dsi(src)
+    meta, sections, raw_circuit, raw_wires, raw_multicores = parse_dsi(src)
 
     # optional: embed sheets from extra .xlsx files given as "Name=path.xlsx"
     extra_sheets = []
@@ -588,6 +666,7 @@ def main():
         print(f"Embedding sheet '{sname}' from {spath}: {len(h)} cols, {len(r)} rows")
 
     sheets = build_workbook(src, meta, sections, out, raw_circuit,
+                            raw_wires=raw_wires, raw_multicores=raw_multicores,
                             extra_sheets=extra_sheets)
     print(f"Wrote {out}")
     print(f"Metadata fields: {len(meta)}")
