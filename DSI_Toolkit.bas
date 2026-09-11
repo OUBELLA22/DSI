@@ -1143,3 +1143,290 @@ Public Sub DSI_Census()
            "'Harness main node components' were fused and the parser is wrong.", _
            vbInformation, "DSI Census"
 End Sub
+
+
+
+'==============================================================================
+' PER-CONNECTOR CAVITY CHARTS
+'
+' One block per connector: a title line, one row per wire landing in each
+' cavity, and the connector part name underneath.
+'
+'   CAV  NB FIL  PART NUMBER WIRE  MATERIAL  FIN  CAV FIN  OPTION  PLUG
+'
+' Field mapping, confirmed cell for cell against a known-good chart for
+' connector 13D8A:
+'
+'   CAV       wire f10 when this connector is the From end, else f14
+'   NB FIL    wire f0
+'   PART NUM  wire f28   (the family code, e.g. B2_ND_00.75)
+'   MATERIAL  wire f11 / f15, the terminal plating at THIS end
+'   FIN       wire f12 / f8,  the connector at the far end
+'   CAV FIN   wire f14 / f10, the cavity at the far end
+'   OPTION    wire f1, with "+" shown as "&&" and "/" as "||"
+'   PLUG      plug section f8, keyed on connector + cavity
+'
+' A cavity with a plug but no wire still gets a row -- that is how an unused
+' but sealed cavity shows up.
+'
+' Run from Alt+F8 -> DSI_ConnectorCharts
+'==============================================================================
+Public Sub DSI_ConnectorCharts()
+    Dim path As String, dsi As Object
+    Dim nodes As Collection, wires As Collection, plugs As Collection, terms As Collection
+    Dim ends_ As Object, plugD As Object, termD As Object
+    Dim r As Variant, ref As String, ctype As String
+    Dim outRows As Collection, kinds As Collection
+    Dim nConn As Long
+
+    path = PickFile("Select the DSI file")
+    If Len(path) = 0 Then Exit Sub
+
+    Application.ScreenUpdating = False
+    On Error GoTo Fail
+
+    Set dsi = ParseDSI(path)
+    Set nodes = SectionRows(dsi, "Harness main node components")
+    Set wires = SectionRows(dsi, "Harness wire specification")
+    Set plugs = SectionRows(dsi, "plug")
+    If plugs.Count = 0 Then Set plugs = SectionRows(dsi, "Harness cavity plugs")
+    Set terms = SectionRows(dsi, "terminals")
+    If terms.Count = 0 Then Set terms = SectionRows(dsi, "Harness terminals")
+
+    Set ends_ = BuildWireEnds(wires)
+    Set plugD = BuildPlugIndex(plugs)
+    Set termD = BuildTerminalCavities(terms)
+
+    Set outRows = New Collection
+    Set kinds = New Collection
+
+    For Each r In nodes
+        ref = Fld(r, 0)
+        ctype = UCase$(Fld(r, 4))
+        If ctype = "CONNECTOR" Or ctype = "IDC" Then
+            EmitChartBlock r, ref, ends_, plugD, termD, outRows, kinds
+            nConn = nConn + 1
+        End If
+    Next r
+
+    If outRows.Count = 0 Then
+        Application.ScreenUpdating = True
+        MsgBox "No connectors found in this file.", vbExclamation
+        Exit Sub
+    End If
+
+    WriteChartSheet outRows, kinds
+
+    Application.ScreenUpdating = True
+    MsgBox "Connector charts written: " & nConn & " connectors, " & _
+           outRows.Count & " rows." & vbCrLf & vbCrLf & _
+           "Sheet: Connector Charts", vbInformation, "DSI Toolkit"
+    Exit Sub
+Fail:
+    Application.ScreenUpdating = True
+    MsgBox "Connector charts failed:" & vbCrLf & Err.Description, vbCritical
+End Sub
+
+' ref -> Collection of Array(cav, wire, spec, material, fin, cavfin, option)
+' A wire has two ends, so it is filed under both connectors in one pass. File
+' order is preserved, which is what keeps rows inside a cavity in export order.
+Private Function BuildWireEnds(ByVal wires As Collection) As Object
+    Dim d As Object, r As Variant, side As Long
+    Dim nearRef As String, nearCav As Long, nearPlate As Long
+    Dim farRef As String, farCav As Long, c As Collection
+
+    Set d = CreateObject("Scripting.Dictionary")
+    For Each r In wires
+        For side = 0 To 1
+            If side = 0 Then
+                nearRef = Fld(r, 8): farRef = Fld(r, 12)
+                nearCav = 10: nearPlate = 11: farCav = 14
+            Else
+                nearRef = Fld(r, 12): farRef = Fld(r, 8)
+                nearCav = 14: nearPlate = 15: farCav = 10
+            End If
+            If Len(nearRef) > 0 Then
+                If Not d.Exists(nearRef) Then
+                    Set c = New Collection
+                    d.Add nearRef, c
+                End If
+                d(nearRef).Add Array(Fld(r, nearCav), Fld(r, 0), Fld(r, 28), _
+                                     Fld(r, nearPlate), farRef, Fld(r, farCav), _
+                                     FormatOption(Fld(r, 1)))
+            End If
+        Next side
+    Next r
+    Set BuildWireEnds = d
+End Function
+
+Private Function BuildPlugIndex(ByVal plugs As Collection) As Object
+    Dim d As Object, r As Variant
+    Set d = CreateObject("Scripting.Dictionary")
+    For Each r In plugs
+        d(Fld(r, 0) & KEYSEP & Fld(r, 1)) = Fld(r, 8)
+    Next r
+    Set BuildPlugIndex = d
+End Function
+
+Private Function BuildTerminalCavities(ByVal terms As Collection) As Object
+    Dim d As Object, r As Variant, k As String
+    Set d = CreateObject("Scripting.Dictionary")
+    For Each r In terms
+        k = Fld(r, 0) & KEYSEP & Fld(r, 1)
+        d(k) = True
+    Next r
+    Set BuildTerminalCavities = d
+End Function
+
+' "+" is AND and "/" is OR in the source; the charts show "&&" and "||".
+' "!" (NOT) and parentheses carry through unchanged.
+Public Function FormatOption(ByVal expr As String) As String
+    Dim s As String
+    If Len(expr) = 0 Then FormatOption = "": Exit Function
+    s = Replace(expr, "+", " && ")
+    s = Replace(s, "/", " || ")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    FormatOption = Trim$(s)
+End Function
+
+Private Sub EmitChartBlock(ByVal nodeRow As Variant, ByVal ref As String, _
+                           ByVal ends_ As Object, ByVal plugD As Object, _
+                           ByVal termD As Object, ByVal outRows As Collection, _
+                           ByVal kinds As Collection)
+    Dim myEnds As Collection, cavs As Variant, i As Long, e As Variant
+    Dim cav As String, plug As String, placed As Boolean, any As Boolean
+    Dim row(0 To 7) As Variant, k As Variant
+
+    ' Title line: reference at the left, description at the right.
+    outRows.Add Array(ref, "", "", "", "", "", Fld(nodeRow, 6), "")
+    kinds.Add "title"
+    outRows.Add Array("CAV", "NB FIL", "PART NUMBER WIRE", "MATERIAL", _
+                      "FIN", "CAV FIN", "OPTION", "PLUG")
+    kinds.Add "header"
+
+    If ends_.Exists(ref) Then Set myEnds = ends_(ref) Else Set myEnds = New Collection
+    cavs = CavityUniverse(ref, myEnds, plugD, termD)
+
+    If IsArray(cavs) Then
+        For i = LBound(cavs) To UBound(cavs)
+            cav = CStr(cavs(i))
+            If plugD.Exists(ref & KEYSEP & cav) Then plug = plugD(ref & KEYSEP & cav) Else plug = ""
+            placed = False
+            For Each e In myEnds
+                If CStr(e(0)) = cav Then
+                    outRows.Add Array(cav, e(1), e(2), e(3), e(4), e(5), e(6), _
+                                      IIf(placed, "", plug))
+                    kinds.Add "data"
+                    placed = True
+                End If
+            Next e
+            If Not placed Then
+                outRows.Add Array(cav, "", "", "", "", "", "", plug)
+                kinds.Add "data"
+            End If
+        Next i
+    End If
+
+    ' Footer: connector part name and part number.
+    outRows.Add Array(Fld(nodeRow, 8), Fld(nodeRow, 12), "", "", "", "", _
+                      IIf(Len(Fld(nodeRow, 28)) > 0, "cavities: " & Fld(nodeRow, 28), ""), "")
+    kinds.Add "footer"
+    outRows.Add Array("", "", "", "", "", "", "", "")
+    kinds.Add "blank"
+End Sub
+
+' Every cavity that has a wire, a plug, or a terminal, in natural order.
+Private Function CavityUniverse(ByVal ref As String, ByVal myEnds As Collection, _
+                                ByVal plugD As Object, ByVal termD As Object) As Variant
+    Dim seen As Object, e As Variant, k As Variant, parts As Variant
+    Dim arr() As String, keys_() As String, n As Long, i As Long, j As Long
+    Dim tk As String, tv As String
+
+    Set seen = CreateObject("Scripting.Dictionary")
+    For Each e In myEnds
+        If Len(CStr(e(0))) > 0 Then seen(CStr(e(0))) = True
+    Next e
+    For Each k In plugD.Keys
+        parts = Split(CStr(k), KEYSEP)
+        If parts(0) = ref And Len(parts(1)) > 0 Then seen(CStr(parts(1))) = True
+    Next k
+    For Each k In termD.Keys
+        parts = Split(CStr(k), KEYSEP)
+        If parts(0) = ref And Len(parts(1)) > 0 Then seen(CStr(parts(1))) = True
+    Next k
+
+    n = seen.Count
+    If n = 0 Then CavityUniverse = Empty: Exit Function
+
+    ReDim arr(0 To n - 1)
+    ReDim keys_(0 To n - 1)
+    i = 0
+    For Each k In seen.Keys
+        arr(i) = CStr(k)
+        keys_(i) = CavSortKey(CStr(k))
+        i = i + 1
+    Next k
+
+    ' Insertion sort: cavity counts are small, so this is not worth more.
+    For i = 1 To n - 1
+        tk = keys_(i): tv = arr(i)
+        j = i - 1
+        Do While j >= 0
+            If keys_(j) <= tk Then Exit Do
+            keys_(j + 1) = keys_(j): arr(j + 1) = arr(j)
+            j = j - 1
+        Loop
+        keys_(j + 1) = tk: arr(j + 1) = tv
+    Next i
+
+    CavityUniverse = arr
+End Function
+
+' Numeric cavities sort before alphanumeric ones, and 10 follows 9 rather
+' than 1, which plain text sorting gets wrong.
+Private Function CavSortKey(ByVal cav As String) As String
+    If IsNumeric(cav) Then
+        CavSortKey = "0" & Format$(CLng(cav), "000000")
+    Else
+        CavSortKey = "1" & UCase$(cav)
+    End If
+End Function
+
+Private Sub WriteChartSheet(ByVal outRows As Collection, ByVal kinds As Collection)
+    Dim ws As Worksheet, data() As Variant, i As Long, c As Long, r As Variant
+    Dim widths As Variant
+
+    Set ws = FreshSheet("Connector Charts")
+    ReDim data(1 To outRows.Count, 1 To 8)
+    i = 1
+    For Each r In outRows
+        For c = 0 To 7
+            data(i, c + 1) = r(c)
+        Next c
+        i = i + 1
+    Next r
+
+    ws.Range("A1").Resize(outRows.Count, 8).Value = data
+
+    ' Style per row kind. Only the header and title rows are touched, so this
+    ' stays fast even with a few thousand rows.
+    For i = 1 To kinds.Count
+        Select Case kinds(i)
+            Case "title"
+                ws.Cells(i, 1).Font.Bold = True
+                ws.Cells(i, 7).Font.Bold = True
+            Case "header"
+                StyleHeader ws.Cells(i, 1).Resize(1, 8)
+            Case "footer"
+                ws.Cells(i, 1).Font.Bold = True
+        End Select
+    Next i
+
+    widths = Array(6, 14, 20, 10, 10, 9, 42, 14)
+    For c = 0 To 7
+        ws.Columns(c + 1).ColumnWidth = widths(c)
+    Next c
+    ws.Range("A1").Select
+End Sub

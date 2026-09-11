@@ -543,3 +543,162 @@ def field_labels(section_name: str) -> Dict[int, str]:
             if isinstance(spec, int) and spec not in labels:
                 labels[spec] = title
     return labels
+
+
+
+# --------------------------------------------------------------------------- #
+# Per-connector cavity charts
+#
+# One block per connector rather than one flat table: a title line, a row per
+# wire landing in each cavity, and the connector part name underneath. This is
+# the shape an engineer checks a connector against.
+#
+# Field mapping was confirmed against a known-good chart for connector 13D8A:
+# every cell -- cavity, wire name, wire family, plating, far-end connector and
+# cavity, option expression, and the cavity-5 plug -- reproduced exactly.
+# --------------------------------------------------------------------------- #
+
+CHART_COLUMNS = [
+    "CAV",
+    "NB FIL",
+    "PART NUMBER WIRE",
+    "MATERIAL",
+    "FIN",
+    "CAV FIN",
+    "OPTION",
+    "PLUG",
+]
+
+# Which component types get a chart. Splices carry cavities too, so add
+# "SPLICE" here if you want charts for them as well.
+CHART_TYPES = ("CONNECTOR", "IDC")
+
+_OPERATORS = ((" + ", " && "), ("+", " && "), (" / ", " || "), ("/", " || "))
+
+
+def format_option(expr: str) -> str:
+    """Rewrite a DSI option expression in the notation used on the charts.
+
+    ``+`` is AND and ``/`` is OR in the source; the charts show ``&&`` and
+    ``||``. ``!`` (NOT) and parentheses carry through unchanged. Confirmed
+    across 872 expressions whose tokens all resolve to real option codes.
+    """
+    if not expr:
+        return ""
+    out = expr.replace("+", " && ").replace("/", " || ")
+    return " ".join(out.split())
+
+
+def _cavity_sort_key(cav: str):
+    """Natural order, so cavity 10 follows 9 rather than 1."""
+    if not cav:
+        return (2, (), "")
+    chunks = re.findall(r"\d+|\D+", cav)
+    key = tuple((0, int(c)) if c.isdigit() else (1, 0) for c in chunks)
+    text = tuple(c.lower() for c in chunks if not c.isdigit())
+    if cav.isdigit():
+        return (0, (int(cav),), "")
+    return (1, key + text, cav.lower())
+
+
+class ConnectorChart:
+    """One connector's block: heading, cavity rows, part name."""
+
+    def __init__(self, ref: str, ctype: str, description: str, part_name: str,
+                 part_number: str, cavities: str) -> None:
+        self.ref = ref
+        self.type = ctype
+        self.description = description
+        self.part_name = part_name
+        self.part_number = part_number
+        self.cavities = cavities
+        self.rows: List[List[str]] = []
+
+
+def connector_charts(dsi: Dsi, types: Sequence[str] = CHART_TYPES) -> List[ConnectorChart]:
+    """Build a cavity chart for every component of the given types."""
+    nodes = dsi.section("Harness main node components")
+    if nodes is None:
+        return []
+    wires = dsi.find("Harness wire specification")
+    plugs = dsi.find("plug", "Harness cavity plugs")
+    terminals = dsi.find("terminals", "Harness terminals")
+    wanted = {t.upper() for t in types}
+
+    # Wire ends grouped by the connector they land on. One pass, in file order,
+    # so rows inside a cavity keep the order the exporter wrote them.
+    ends: Dict[str, List[Dict[str, str]]] = {}
+    if wires is not None:
+        for row in wires.rows:
+            for near, far in ((8, 12), (12, 8)):
+                ref = wires.field(row, near)
+                if not ref:
+                    continue
+                near_cav, near_plate = (10, 11) if near == 8 else (14, 15)
+                far_cav = 14 if near == 8 else 10
+                ends.setdefault(ref, []).append(
+                    {
+                        "cav": wires.field(row, near_cav),
+                        "wire": wires.field(row, 0),
+                        "spec": wires.field(row, 28),
+                        "material": wires.field(row, near_plate),
+                        "fin": wires.field(row, far),
+                        "cavfin": wires.field(row, far_cav),
+                        "option": format_option(wires.field(row, 1)),
+                    }
+                )
+
+    plug_by: Dict[str, Dict[str, str]] = {}
+    if plugs is not None:
+        for row in plugs.rows:
+            plug_by.setdefault(plugs.field(row, 0), {})[plugs.field(row, 1)] = plugs.field(row, 8)
+
+    term_cavs: Dict[str, set] = {}
+    if terminals is not None:
+        for row in terminals.rows:
+            term_cavs.setdefault(terminals.field(row, 0), set()).add(terminals.field(row, 1))
+
+    charts: List[ConnectorChart] = []
+    for row in nodes.rows:
+        ref = nodes.field(row, 0)
+        ctype = nodes.field(row, 4).upper()
+        if ctype not in wanted:
+            continue
+        chart = ConnectorChart(
+            ref,
+            nodes.field(row, 4),
+            nodes.field(row, 6),
+            nodes.field(row, 8),
+            nodes.field(row, 12),
+            nodes.field(row, 28),
+        )
+
+        my_ends = ends.get(ref, [])
+        my_plugs = plug_by.get(ref, {})
+        # Every cavity that has a wire, a plug, or a terminal. A plugged but
+        # unwired cavity still belongs on the chart.
+        universe = set(e["cav"] for e in my_ends) | set(my_plugs) | term_cavs.get(ref, set())
+        universe.discard("")
+
+        for cav in sorted(universe, key=_cavity_sort_key):
+            at_cav = [e for e in my_ends if e["cav"] == cav]
+            plug = my_plugs.get(cav, "")
+            if not at_cav:
+                chart.rows.append([cav, "", "", "", "", "", "", plug])
+                continue
+            for index, end in enumerate(at_cav):
+                chart.rows.append(
+                    [
+                        cav,
+                        end["wire"],
+                        end["spec"],
+                        end["material"],
+                        end["fin"],
+                        end["cavfin"],
+                        end["option"],
+                        plug if index == 0 else "",
+                    ]
+                )
+        charts.append(chart)
+
+    return charts

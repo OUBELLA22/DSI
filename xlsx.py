@@ -35,6 +35,7 @@ __all__ = [
     "GREY",
     "BOLD",
     "CENTER",
+    "HEADER",
 ]
 
 # Style keys, mapped to cellXfs indices in _CELL_XFS order.
@@ -45,6 +46,7 @@ RED = "red"        # removed
 GREEN = "green"    # added
 GREY = "grey"      # not compared
 BOLD = "bold"
+HEADER = "header"  # white on dark blue; usable mid-sheet for repeated headers
 
 # cellXfs index per style. Index 0 is bare, 1 is the bordered body style,
 # 2 the header. Excel's own Bad/Good/Neutral colours are used rather than the
@@ -94,9 +96,15 @@ class Sheet:
         center_cols: Optional[Iterable[int]] = None,
         table: bool = True,
         widths: Optional[Dict[int, float]] = None,
+        header_style: Optional[str] = "header",
+        header_fills: Optional[Dict[int, str]] = None,
     ) -> None:
         self.name = name
         self.headers = list(headers)
+        # header_style=None means row 1 is an ordinary row. Needed for a
+        # stacked layout, where row 1 is a block title rather than a header.
+        self.header_style = header_style
+        self.header_fills: Dict[int, str] = dict(header_fills or {})
         self.rows: List[List[str]] = []
         self.fills: List[Dict[int, str]] = []
         self.text_cols: Set[int] = set(text_cols or ())
@@ -185,7 +193,12 @@ def _sheet_xml(sheet: Sheet) -> str:
 
     header_cells = ['<row r="1">']
     for i, title in enumerate(sheet.headers, 1):
-        header_cells.append(_cell("{}1".format(_col_letter(i)), str(title), _STYLE_INDEX["header"], True))
+        if sheet.header_style is None:
+            name = sheet.header_fills.get(i - 1)
+            style = _STYLE_INDEX[name] if name else _STYLE_INDEX[PLAIN]
+        else:
+            style = _STYLE_INDEX[sheet.header_style]
+        header_cells.append(_cell("{}1".format(_col_letter(i)), str(title), style, True))
     header_cells.append("</row>")
     parts.append("".join(header_cells))
 

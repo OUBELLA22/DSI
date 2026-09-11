@@ -66,6 +66,7 @@ def file_metadata(dsi: Dsi) -> List[Tuple[str, str]]:
 # Single file: element views
 # --------------------------------------------------------------------------- #
 MATRIX_KEY = "matrix"
+CHART_KEY = "charts"
 
 
 def available_views(dsi: Dsi) -> List[Tuple[str, str, int]]:
@@ -75,11 +76,70 @@ def available_views(dsi: Dsi) -> List[Tuple[str, str, int]]:
         count = view.count(dsi)
         if count:
             out.append((view.key, view.label, count))
+        if view.key == "connectors" and count:
+            charts = sum(
+                1
+                for r in dsi["Harness main node components"].rows
+                if dsi["Harness main node components"].field(r, 4).upper()
+                in views_mod.CHART_TYPES
+            )
+            out.append((CHART_KEY, "Connector cavity charts", charts))
     if "Harness circuit information" in dsi:
         circuits = dsi["Harness circuit information"]
         if circuits.rows:
             out.append((MATRIX_KEY, "Option matrix (circuit x code)", len(circuits.rows)))
     return out
+
+
+def build_chart_sheet(dsi: Dsi) -> Tuple[Optional[xlsx.Sheet], int]:
+    """Stacked per-connector cavity charts, one block each.
+
+    Row 1 is a block title rather than a column header, so the sheet is written
+    with header_style=None and every row driven through add().
+    """
+    charts = views_mod.connector_charts(dsi)
+    if not charts:
+        return None, 0
+
+    cols = views_mod.CHART_COLUMNS
+    width = len(cols)
+    first = charts[0]
+
+    def title_row(chart: views_mod.ConnectorChart) -> Tuple[List[str], Dict[int, str]]:
+        row = [""] * width
+        row[0] = chart.ref
+        row[6] = chart.description
+        return row, {0: xlsx.BOLD, 6: xlsx.BOLD}
+
+    head, head_fills = title_row(first)
+    sheet = xlsx.Sheet(
+        "Connector Charts",
+        head,
+        table=False,
+        header_style=None,
+        header_fills=head_fills,
+        center_cols={0, 3, 5},
+        widths={0: 6, 1: 14, 2: 20, 3: 10, 4: 10, 5: 9, 6: 42, 7: 14},
+    )
+
+    def emit_block(chart: views_mod.ConnectorChart) -> None:
+        sheet.add(list(cols), fills={i: xlsx.HEADER for i in range(width)})
+        for row in chart.rows:
+            sheet.add(row)
+        footer = [""] * width
+        footer[0] = chart.part_name
+        footer[1] = chart.part_number
+        footer[6] = "cavities: {}".format(chart.cavities) if chart.cavities else ""
+        sheet.add(footer, fills={0: xlsx.BOLD})
+        sheet.add([""] * width)
+
+    emit_block(first)
+    for chart in charts[1:]:
+        row, fills = title_row(chart)
+        sheet.add(row, fills=fills)
+        emit_block(chart)
+
+    return sheet, len(charts)
 
 
 def build_view_workbook(dsi: Dsi, keys: Sequence[str], path: str) -> List[Tuple[str, int, int]]:
@@ -99,6 +159,15 @@ def build_view_workbook(dsi: Dsi, keys: Sequence[str], path: str) -> List[Tuple[
     sheets.append(overview)
 
     for key in keys:
+        if key == CHART_KEY:
+            sheet, n = build_chart_sheet(dsi)
+            if sheet is None:
+                continue
+            sheets.append(sheet)
+            overview.add(["Connector cavity charts", "{} connectors".format(n)])
+            summary.append(("Connector Charts", len(views_mod.CHART_COLUMNS), len(sheet)))
+            continue
+
         if key == MATRIX_KEY:
             headers, rows = views_mod.option_matrix(dsi)
             if not headers:
@@ -446,7 +515,10 @@ def choose_elements(dsi: Dsi) -> Optional[List[str]]:
     numbering: List[str] = []
     for key, label, count in entries:
         view = views_mod.VIEWS_BY_KEY.get(key)
-        group = view.group if view else "Variance"
+        if key == CHART_KEY:
+            group = "Components"
+        else:
+            group = view.group if view else "Variance"
         numbering.append(key)
         by_group.setdefault(group, []).append((len(numbering), label, count))
 
@@ -542,7 +614,7 @@ def flow_view(path: Optional[str] = None, keys: Optional[Sequence[str]] = None,
             print("\nCancelled.")
             return 1
     else:
-        known = set(views_mod.VIEWS_BY_KEY) | {MATRIX_KEY}
+        known = set(views_mod.VIEWS_BY_KEY) | {MATRIX_KEY, CHART_KEY}
         bad = [k for k in keys if k not in known]
         if bad:
             print("Unknown element(s): {}".format(", ".join(bad)))
@@ -671,6 +743,8 @@ def main(argv: Sequence[str]) -> int:
     if args[0] == "--list-elements":
         for view in views_mod.VIEWS:
             print("  {:<12} {:<34} {}".format(view.key, view.label, view.section_names[0]))
+        print("  {:<12} {:<34} {}".format(CHART_KEY, "Connector cavity charts",
+                                          "Harness main node components"))
         print("  {:<12} {}".format(MATRIX_KEY, "Option matrix (circuit x code)"))
         return 0
 
