@@ -133,7 +133,7 @@ Public Sub CompareTwoFiles()
     Dim pathA As String, pathB As String
     Dim dsiA As Object, dsiB As Object
     Dim names As Collection, nm As Variant
-    Dim rules As Object, rule As Object
+    Dim rules As Object
     Dim synth As Collection, diffs As Collection
     Dim res As Object
 
@@ -471,7 +471,8 @@ Private Function CompareSection(ByVal dsiA As Object, ByVal dsiB As Object, _
     Dim rule As Object, res As Object, pairs As Collection
     Dim rowsA As Collection, rowsB As Collection
     Dim keySets As Variant, swapD As Object, ignoreD As Object
-    Dim width As Long, k As Long, u As Long, ub As Long
+    ' 'wid', not 'width': Width is a VBA reserved word (the Width # statement).
+    Dim wid As Long, k As Long, u As Long, ub As Long
     Dim matchedB() As Long, claimed() As Boolean, revd() As Boolean
     Dim i As Long, j As Long, keyFields As Variant
     Dim idx As Object, kk As String, bucket As Collection, bi As Long
@@ -487,8 +488,8 @@ Private Function CompareSection(ByVal dsiA As Object, ByVal dsiB As Object, _
     Set ignoreD = ToSet(ParseIntList(CStr(rule("ignore"))))
     keySets = Split(CStr(rule("keys")), ";")
 
-    width = SectionWidth(dsiA, name)
-    If SectionWidth(dsiB, name) > width Then width = SectionWidth(dsiB, name)
+    wid = SectionWidth(dsiA, name)
+    If SectionWidth(dsiB, name) > wid Then wid = SectionWidth(dsiB, name)
 
     If rowsA.Count > 0 Then ReDim matchedB(1 To rowsA.Count) Else ReDim matchedB(1 To 1)
     If rowsA.Count > 0 Then ReDim revd(1 To rowsA.Count) Else ReDim revd(1 To 1)
@@ -559,7 +560,7 @@ NextRev:
         Else
             pr.Add "rowB", rowsB(matchedB(i))
             Set diffs = New Collection
-            For u = 0 To width - 1
+            For u = 0 To wid - 1
                 If Not ignoreD.Exists(u) Then
                     ' A reversed row has its paired fields the other way round.
                     If revd(i) And swapD.Exists(u) Then ub = swapD(u) Else ub = u
@@ -601,7 +602,7 @@ NextRev:
     res.Add "ignoreDesc", IIf(Len(CStr(rule("ignore"))) = 0, "-", CStr(rule("ignore")))
     res.Add "rowsA", rowsA.Count
     res.Add "rowsB", rowsB.Count
-    res.Add "width", width
+    res.Add "width", wid
     res.Add "nOK", nOK
     res.Add "nMod", nMod
     res.Add "nAdd", nAdd
@@ -1296,8 +1297,7 @@ Private Sub EmitChartBlock(ByVal nodeRow As Variant, ByVal ref As String, _
                            ByVal termD As Object, ByVal outRows As Collection, _
                            ByVal kinds As Collection)
     Dim myEnds As Collection, cavs As Variant, i As Long, e As Variant
-    Dim cav As String, plug As String, placed As Boolean, any As Boolean
-    Dim row(0 To 7) As Variant, k As Variant
+    Dim cav As String, plug As String, placed As Boolean
 
     ' Title line: reference at the left, description at the right.
     outRows.Add Array(ref, "", "", "", "", "", Fld(nodeRow, 6), "")
