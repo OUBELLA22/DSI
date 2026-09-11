@@ -85,15 +85,17 @@ Public Sub ViewOneFile()
     ' Only offer views that actually have rows in this file.
     Set avail = New Collection
     Set idxList = New Collection
-    menu = "What do you want to see?" & vbCrLf & vbCrLf
+    ' Kept compact on purpose: InputBox truncates a prompt over 1024
+    ' characters, and 21 views at the obvious spacing came to about 1090.
+    menu = "What do you want to see?   (element, rows)" & vbCrLf & vbCrLf
     For i = LBound(views_) To UBound(views_)
         n = ViewRowCount(dsi, CStr(views_(i)))
         If n > 0 Then
             avail.Add views_(i)
             idxList.Add i
             menu = menu & Format$(avail.Count, "@@") & "  " & _
-                   PadRight(ViewField(CStr(views_(i)), 0), 30) & _
-                   Format$(n, "@@@@@@") & " rows" & vbCrLf
+                   PadRight(ViewField(CStr(views_(i)), 0), 24) & _
+                   Format$(n, "@@@@@") & vbCrLf
         End If
     Next i
     menu = menu & vbCrLf & "a  = everything" & vbCrLf & vbCrLf & _
@@ -356,47 +358,50 @@ End Function
 '   ignore "2,5,19"     fields excluded from comparison
 '==============================================================================
 Public Function RuleTable() As Variant
-    RuleTable = Array( _
-        "Harness name information|0||", _
-        "Harness circuit information|0||", _
-        "Harness branch configuration|0+3|0-3,2-5|2,5,19,20,21,22,23", _
-        "Harness wire specification|0||", _
-        "Harness main node components|0||", _
-        "terminals|0+1||", _
-        "Harness terminals|0+1||", _
-        "seals|0+1||", _
-        "Harness cavity seals|0+1||", _
-        "plug|0+1||", _
-        "Harness cavity plugs|0+1||", _
-        "clips|0||", _
-        "grommets|0||", _
-        "other components|0||", _
-        "Harness extra node components|0+8;0||", _
-        "Extra_Node_Component|0+8;0||", _
-        "Harness branch insulations|0+2|0-2|4", _
-        "Branch_insulation|0+2|0-2|4", _
-        "Harness multicores|0||", _
-        "Harness center strips|0+1||", _
-        "Module child details|7||4,9", _
-        "Module compatibility details|0+1|0-1|", _
-        "Manual BOM quantities|0||", _
-        "Harness wire through nodes|0+2||", _
-        "Harness branch insulation through nodes|0+1||", _
-        "Harness mid wire components|0+1||", _
-        "Harness wire / multicore markers|0+1||", _
-        "Harness pin mappings|0+1||", _
-        "Harness Scope|0+1+2+4;0+1+2||", _
-        "Composite Option Codes|0||", _
-        "Harness note information|0||", _
-        "Assemblies|8+26;8||", _
-        "Harness assembly items|8+26;8||", _
-        "Multi Location Components|0+3+8;0+3||", _
-        "Harness multiple location components|0+3+8;0+3||", _
-        "property|0+1+2+3;0+1+2||", _
-        "tape|0||", _
-        "extracavity|0+1||", _
-        "WIREend|0+1||" _
-    )
+    ' VBA allows at most 25 line-continuation characters in one statement,
+    ' so this is appended line by line instead of built as one Array(...)
+    ' literal. Add an entry by copying a line; there is no limit this way.
+    Dim s As String
+    s = s & "Harness name information|0||" & vbLf
+    s = s & "Harness circuit information|0||" & vbLf
+    s = s & "Harness branch configuration|0+3|0-3,2-5|2,5,19,20,21,22,23" & vbLf
+    s = s & "Harness wire specification|0||" & vbLf
+    s = s & "Harness main node components|0||" & vbLf
+    s = s & "terminals|0+1||" & vbLf
+    s = s & "Harness terminals|0+1||" & vbLf
+    s = s & "seals|0+1||" & vbLf
+    s = s & "Harness cavity seals|0+1||" & vbLf
+    s = s & "plug|0+1||" & vbLf
+    s = s & "Harness cavity plugs|0+1||" & vbLf
+    s = s & "clips|0||" & vbLf
+    s = s & "grommets|0||" & vbLf
+    s = s & "other components|0||" & vbLf
+    s = s & "Harness extra node components|0+8;0||" & vbLf
+    s = s & "Extra_Node_Component|0+8;0||" & vbLf
+    s = s & "Harness branch insulations|0+2|0-2|4" & vbLf
+    s = s & "Branch_insulation|0+2|0-2|4" & vbLf
+    s = s & "Harness multicores|0||" & vbLf
+    s = s & "Harness center strips|0+1||" & vbLf
+    s = s & "Module child details|7||4,9" & vbLf
+    s = s & "Module compatibility details|0+1|0-1|" & vbLf
+    s = s & "Manual BOM quantities|0||" & vbLf
+    s = s & "Harness wire through nodes|0+2||" & vbLf
+    s = s & "Harness branch insulation through nodes|0+1||" & vbLf
+    s = s & "Harness mid wire components|0+1||" & vbLf
+    s = s & "Harness wire / multicore markers|0+1||" & vbLf
+    s = s & "Harness pin mappings|0+1||" & vbLf
+    s = s & "Harness Scope|0+1+2+4;0+1+2||" & vbLf
+    s = s & "Composite Option Codes|0||" & vbLf
+    s = s & "Harness note information|0||" & vbLf
+    s = s & "Assemblies|8+26;8||" & vbLf
+    s = s & "Harness assembly items|8+26;8||" & vbLf
+    s = s & "Multi Location Components|0+3+8;0+3||" & vbLf
+    s = s & "Harness multiple location components|0+3+8;0+3||" & vbLf
+    s = s & "property|0+1+2+3;0+1+2||" & vbLf
+    s = s & "tape|0||" & vbLf
+    s = s & "extracavity|0+1||" & vbLf
+    s = s & "WIREend|0+1||" & vbLf
+    RuleTable = Split(Left$(s, Len(s) - 1), vbLf)
 End Function
 
 Private Function BuildRules() As Object
@@ -840,29 +845,32 @@ End Sub
 '                          (circuit option codes are a variable-length tail)
 '==============================================================================
 Public Function ViewTable() As Variant
-    ViewTable = Array( _
-      "Connectors|Harness main node components|4=CONNECTOR|Reference:0,Type:4,Description:6,Part Name:8,Part Number:12,Family:19,Colour:27,Cavities:28,Terminals:#terminals,Seals:#seals,Plugs:#plug,Wires:#wires,Route:7", _
-      "Splices|Harness main node components|4=SPLICE|Reference:0,Type:4,Description:6,Part Name:8,Part Number:12,Family:19,Colour:27,Cavities:28,Terminals:#terminals,Seals:#seals,Plugs:#plug,Wires:#wires,Route:7", _
-      "IDC|Harness main node components|4=IDC|Reference:0,Type:4,Description:6,Part Name:8,Part Number:12,Family:19,Colour:27,Cavities:28,Terminals:#terminals,Seals:#seals,Plugs:#plug,Wires:#wires,Route:7", _
-      "All Node Components|Harness main node components||Reference:0,Type:4,Description:6,Part Name:8,Part Number:12,Family:19,Colour:27,Cavities:28,Terminals:#terminals,Seals:#seals,Plugs:#plug,Wires:#wires,Route:7", _
-      "Terminals|terminals||Connector:0,Cavity:1,Type:4,Part Name:8,Qty:9,Part Number:12,Sealed:13,Selection:17,Plating:18", _
-      "Cavity Seals|seals||Connector:0,Cavity:1,Type:4,Part Name:8,Qty:9,Part Number:12", _
-      "Cavity Plugs|plug||Connector:0,Cavity:1,Type:4,Part Name:8,Qty:9,Part Number:12", _
-      "Clips|clips||Reference:0,Type:4,Option Expression:5,Parent Node:6,Part Name:8,Qty:9,Part Number:12,Family:19,Colour:27", _
-      "Grommets|grommets||Reference:0,Type:4,Option Expression:5,Parent Node:6,Part Name:8,Qty:9,Part Number:12,Family:19,Colour:27", _
-      "Other Components|other components||Reference:0,Type:4,Option Expression:5,Parent Node:6,Part Name:8,Qty:9,Part Number:12,Family:19,Colour:27", _
-      "Extra Node Components|Harness extra node components||Reference:0,Type:4,Option Expression:5,Parent Node:6,Part Name:8,Qty:9,Part Number:12,Family:19,Colour:27", _
-      "Wires|Harness wire specification||Wire:0,Option Expression:1,Wire Spec:2,Colour:3,Size mm2:4,Class:5,Multicore:7,From Connector:8,From Cavity:10,From Plating:11,To Connector:12,To Cavity:14,To Plating:15,Length Min:24,Length Max:25,Family:28,Part Number:30", _
-      "Multicores|Harness multicores||Multicore:0,Flag A:1,Flag B:2,Lay Length:13,Twisted:14,Length Min:20,Length Max:21,Group:22,Part Number:24", _
-      "Wire Through Nodes|Harness wire through nodes||Wire:0,Option Expression:1,Sequence:2,Node:3,Through:5", _
-      "Branches|Harness branch configuration||From Node:0,From X:x2,From Y:y2,From Z:z2,To Node:3,To X:x5,To Y:y5,To Z:z5,Length mm:6,Option Expression:7,Diameter mm:8", _
-      "Insulations|Harness branch insulations||From Node:0,To Node:2,Route:3,Sequence:4,Diameter mm:6,Option Expression:7,Source:12,Order:17,Type:18,Material Spec:19,Part Number:21,Colour:22,Family:23,Coverage:25", _
-      "Insulation Through Nodes|Harness branch insulation through nodes||Insulation From:0,Sequence:1,Node:2,Through:4", _
-      "Circuits|Harness circuit information||Circuit ID:0,Rev:1,Date:2,Source:3,Site:11,Description:26,Metric:31,Option Codes:@36", _
-      "Option Codes|Composite Option Codes||Option Code:0,Description:1", _
-      "Harness Scope|Harness Scope||Harness ID:0,Rev:1,Harness ID 2:2,Rev 2:3,Attribute:4,Value:5,Value 2:6", _
-      "Harness Identity|Harness name information||Harness ID:0,Rev:1,Date:2,Field 4:3,Source:4,Harness ID 2:5,Rev 2:6,Date 2:7,Site:11,Drawing:25" _
-    )
+    ' VBA allows at most 25 line-continuation characters in one statement,
+    ' so this is appended line by line instead of built as one Array(...)
+    ' literal. Add an entry by copying a line; there is no limit this way.
+    Dim s As String
+    s = s & "Connectors|Harness main node components|4=CONNECTOR|Reference:0,Type:4,Description:6,Part Name:8,Part Number:12,Family:19,Colour:27,Cavities:28,Terminals:#terminals,Seals:#seals,Plugs:#plug,Wires:#wires,Route:7" & vbLf
+    s = s & "Splices|Harness main node components|4=SPLICE|Reference:0,Type:4,Description:6,Part Name:8,Part Number:12,Family:19,Colour:27,Cavities:28,Terminals:#terminals,Seals:#seals,Plugs:#plug,Wires:#wires,Route:7" & vbLf
+    s = s & "IDC|Harness main node components|4=IDC|Reference:0,Type:4,Description:6,Part Name:8,Part Number:12,Family:19,Colour:27,Cavities:28,Terminals:#terminals,Seals:#seals,Plugs:#plug,Wires:#wires,Route:7" & vbLf
+    s = s & "All Node Components|Harness main node components||Reference:0,Type:4,Description:6,Part Name:8,Part Number:12,Family:19,Colour:27,Cavities:28,Terminals:#terminals,Seals:#seals,Plugs:#plug,Wires:#wires,Route:7" & vbLf
+    s = s & "Terminals|terminals||Connector:0,Cavity:1,Type:4,Part Name:8,Qty:9,Part Number:12,Sealed:13,Selection:17,Plating:18" & vbLf
+    s = s & "Cavity Seals|seals||Connector:0,Cavity:1,Type:4,Part Name:8,Qty:9,Part Number:12" & vbLf
+    s = s & "Cavity Plugs|plug||Connector:0,Cavity:1,Type:4,Part Name:8,Qty:9,Part Number:12" & vbLf
+    s = s & "Clips|clips||Reference:0,Type:4,Option Expression:5,Parent Node:6,Part Name:8,Qty:9,Part Number:12,Family:19,Colour:27" & vbLf
+    s = s & "Grommets|grommets||Reference:0,Type:4,Option Expression:5,Parent Node:6,Part Name:8,Qty:9,Part Number:12,Family:19,Colour:27" & vbLf
+    s = s & "Other Components|other components||Reference:0,Type:4,Option Expression:5,Parent Node:6,Part Name:8,Qty:9,Part Number:12,Family:19,Colour:27" & vbLf
+    s = s & "Extra Node Components|Harness extra node components||Reference:0,Type:4,Option Expression:5,Parent Node:6,Part Name:8,Qty:9,Part Number:12,Family:19,Colour:27" & vbLf
+    s = s & "Wires|Harness wire specification||Wire:0,Option Expression:1,Wire Spec:2,Colour:3,Size mm2:4,Class:5,Multicore:7,From Connector:8,From Cavity:10,From Plating:11,To Connector:12,To Cavity:14,To Plating:15,Length Min:24,Length Max:25,Family:28,Part Number:30" & vbLf
+    s = s & "Multicores|Harness multicores||Multicore:0,Flag A:1,Flag B:2,Lay Length:13,Twisted:14,Length Min:20,Length Max:21,Group:22,Part Number:24" & vbLf
+    s = s & "Wire Through Nodes|Harness wire through nodes||Wire:0,Option Expression:1,Sequence:2,Node:3,Through:5" & vbLf
+    s = s & "Branches|Harness branch configuration||From Node:0,From X:x2,From Y:y2,From Z:z2,To Node:3,To X:x5,To Y:y5,To Z:z5,Length mm:6,Option Expression:7,Diameter mm:8" & vbLf
+    s = s & "Insulations|Harness branch insulations||From Node:0,To Node:2,Route:3,Sequence:4,Diameter mm:6,Option Expression:7,Source:12,Order:17,Type:18,Material Spec:19,Part Number:21,Colour:22,Family:23,Coverage:25" & vbLf
+    s = s & "Insulation Through Nodes|Harness branch insulation through nodes||Insulation From:0,Sequence:1,Node:2,Through:4" & vbLf
+    s = s & "Circuits|Harness circuit information||Circuit ID:0,Rev:1,Date:2,Source:3,Site:11,Description:26,Metric:31,Option Codes:@36" & vbLf
+    s = s & "Option Codes|Composite Option Codes||Option Code:0,Description:1" & vbLf
+    s = s & "Harness Scope|Harness Scope||Harness ID:0,Rev:1,Harness ID 2:2,Rev 2:3,Attribute:4,Value:5,Value 2:6" & vbLf
+    s = s & "Harness Identity|Harness name information||Harness ID:0,Rev:1,Date:2,Field 4:3,Source:4,Harness ID 2:5,Rev 2:6,Date 2:7,Site:11,Drawing:25" & vbLf
+    ViewTable = Split(Left$(s, Len(s) - 1), vbLf)
 End Function
 
 Private Function ViewField(ByVal spec As String, ByVal idx As Long) As String
