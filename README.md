@@ -73,6 +73,7 @@ If you want geometry differences reported, delete the coordinate fields from
 | `xlsx.py` | Small xlsx writer with per-cell fills |
 | `dsi_tool.py` | The interactive front end |
 | `dsi_to_excel.py` | Earlier whole-file dump, kept as is |
+| `DSI_Toolkit.bas` | VBA edition, for running inside Excel with no Python. Import via Alt+F11 → File → Import File, then Alt+F8 → `DSI_Run`. Its match-key and view tables are checked against the Python ones. |
 
 ## Notes on the format
 
