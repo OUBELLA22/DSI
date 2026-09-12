@@ -484,47 +484,68 @@ VIEWS_BY_KEY = {v.key: v for v in VIEWS}
 GROUP_ORDER = ["Components", "Wiring", "Structure", "Variance", "Other"]
 
 
-def option_matrix(dsi: Dsi, option_start: int = 36) -> Tuple[List[str], List[List[str]]]:
+def option_matrix(
+    dsi: Dsi,
+    option_start: int = 36,
+    include_raw_list: bool = False,
+) -> Tuple[List[str], List[List[str]]]:
     """Circuit x option-code presence grid, ``X`` where the code applies.
 
-    Read from the raw trailing fields so only genuine codes are picked up,
-    skipping the ``true``/``false`` flags that sit before them.
+    This is the PTA table. Structure was established from the one filled row in
+    the reference ``PTA.xlsx``: circuit id, revision and description, then one
+    column per option code declared in ``Composite Option Codes``, in
+    declaration order, with ``X`` where the circuit carries that code.
+
+    Every *declared* code gets a column, including codes no circuit happens to
+    use. That matters: if the columns were only the codes in use, two harnesses
+    would produce different column sets and could not be laid side by side or
+    diffed. The reference PTA keeps all 35 for the same reason.
+
+    Args:
+        include_raw_list: also emit the raw option-code tail, one code per
+            column, as the reference PTA does in its ``Option 5..21`` block.
+            Redundant with the grid, so off by default.
     """
     section = dsi.section("Harness circuit information")
     if section is None or not section.rows:
         return [], []
-    known = {c for c in dsi.section("Composite Option Codes").column(0)} if "Composite Option Codes" in dsi else set()
+
+    codes_section = dsi.section("Composite Option Codes")
+    declared = list(codes_section.column(0)) if codes_section is not None else []
 
     circuits = []
-    ordered: List[str] = []
     seen = set()
+    widest = 0
     for row in section.rows:
-        ref = section.field(row, 0)
-        desc = section.field(row, 26)
-        codes = set()
+        tail = []
         for value in row[option_start:]:
             value = value.strip()
+            # The flags that sit before the codes are not option codes.
             if not value or value.lower() in ("true", "false"):
                 continue
-            codes.add(value)
-            if value not in seen:
-                seen.add(value)
-                ordered.append(value)
-        circuits.append((ref, desc, codes))
+            tail.append(value)
+            seen.add(value)
+        widest = max(widest, len(tail))
+        circuits.append((section.field(row, 0), section.field(row, 1), section.field(row, 26), tail))
 
-    # Prefer the declared order from Composite Option Codes, then any extras.
-    if known:
-        declared = [c for c in dsi.section("Composite Option Codes").column(0) if c in seen]
-        extras = sorted(c for c in seen if c not in known)
-        all_codes = declared + extras
-    else:
-        all_codes = sorted(ordered)
+    # Declared order first, then anything a circuit references that was never
+    # declared -- a real inconsistency, so it is surfaced rather than dropped.
+    extras = sorted(c for c in seen if c not in set(declared))
+    all_codes = declared + extras
 
-    headers = ["Circuit ID", "Description"] + all_codes
-    rows = [
-        [ref, desc] + ["X" if code in codes else "" for code in all_codes]
-        for ref, desc, codes in circuits
-    ]
+    headers = ["Circuit ID", "Rev", "Description"]
+    if include_raw_list:
+        headers += ["Option {}".format(i + 1) for i in range(widest)]
+    headers += all_codes
+
+    rows = []
+    for ref, rev, desc, tail in circuits:
+        row = [ref, rev, desc]
+        if include_raw_list:
+            row += tail + [""] * (widest - len(tail))
+        carried = set(tail)
+        row += ["X" if code in carried else "" for code in all_codes]
+        rows.append(row)
     return headers, rows
 
 
@@ -702,3 +723,25 @@ def connector_charts(dsi: Dsi, types: Sequence[str] = CHART_TYPES) -> List[Conne
         charts.append(chart)
 
     return charts
+
+
+
+def declared_codes(dsi: Dsi) -> List[str]:
+    """Option codes declared in ``Composite Option Codes``, in declaration order.
+
+    Plus any code a circuit references without declaring, which is an
+    inconsistency in the export worth seeing rather than silently dropping.
+    """
+    section = dsi.section("Composite Option Codes")
+    declared = list(section.column(0)) if section is not None else []
+    circuits = dsi.section("Harness circuit information")
+    if circuits is None:
+        return declared
+    known = set(declared)
+    extras = set()
+    for row in circuits.rows:
+        for value in row[36:]:
+            value = value.strip()
+            if value and value.lower() not in ("true", "false") and value not in known:
+                extras.add(value)
+    return declared + sorted(extras)

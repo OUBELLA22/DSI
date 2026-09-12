@@ -66,6 +66,7 @@ def file_metadata(dsi: Dsi) -> List[Tuple[str, str]]:
 # Single file: element views
 # --------------------------------------------------------------------------- #
 MATRIX_KEY = "matrix"
+PTA_FULL_KEY = "ptafull"
 CHART_KEY = "charts"
 
 # Sheets read out of an existing .xlsx and carried through unchanged, keyed by
@@ -114,6 +115,7 @@ def available_views(dsi: Dsi) -> List[Tuple[str, str, int]]:
         circuits = dsi["Harness circuit information"]
         if circuits.rows:
             out.append((MATRIX_KEY, "Option matrix (circuit x code)", len(circuits.rows)))
+            out.append((PTA_FULL_KEY, "PTA table, full shape", len(circuits.rows)))
     for key, (label, path) in EXTERNAL.items():
         try:
             _, rows = read_external(path)
@@ -226,13 +228,19 @@ def build_view_workbook(dsi: Dsi, keys: Sequence[str], path: str) -> List[Tuple[
             summary.append(("Connector Charts", len(views_mod.CHART_COLUMNS), len(sheet)))
             continue
 
-        if key == MATRIX_KEY:
-            headers, rows = views_mod.option_matrix(dsi)
+        if key in (MATRIX_KEY, PTA_FULL_KEY):
+            full = key == PTA_FULL_KEY
+            headers, rows = views_mod.option_matrix(dsi, include_raw_list=full)
             if not headers:
                 continue
-            centre = set(range(2, len(headers)))
+            label = "PTA table (full shape)" if full else "Option matrix (circuit x code)"
+            name = "PTA Table" if full else "Option Matrix"
+            # Only the single-code X columns are narrowed; the leading metadata
+            # and the raw code list need normal width.
+            first_code = len(headers) - len(views_mod.declared_codes(dsi))
+            centre = set(range(first_code, len(headers)))
             sheet = xlsx.Sheet(
-                "Option Matrix",
+                name,
                 headers,
                 text_cols=set(range(len(headers))),
                 center_cols=centre,
@@ -241,8 +249,8 @@ def build_view_workbook(dsi: Dsi, keys: Sequence[str], path: str) -> List[Tuple[
             for row in rows:
                 sheet.add(row)
             sheets.append(sheet)
-            overview.add(["Option matrix (circuit x code)", str(len(rows))])
-            summary.append(("Option Matrix", len(headers), len(rows)))
+            overview.add([label, str(len(rows))])
+            summary.append((name, len(headers), len(rows)))
             continue
 
         view = views_mod.VIEWS_BY_KEY.get(key)
@@ -676,7 +684,7 @@ def flow_view(path: Optional[str] = None, keys: Optional[Sequence[str]] = None,
             print("\nCancelled.")
             return 1
     else:
-        known = set(views_mod.VIEWS_BY_KEY) | {MATRIX_KEY, CHART_KEY} | set(EXTERNAL)
+        known = set(views_mod.VIEWS_BY_KEY) | {MATRIX_KEY, PTA_FULL_KEY, CHART_KEY} | set(EXTERNAL)
         bad = [k for k in keys if k not in known]
         if bad:
             print("Unknown element(s): {}".format(", ".join(bad)))
