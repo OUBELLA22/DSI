@@ -68,6 +68,32 @@ def file_metadata(dsi: Dsi) -> List[Tuple[str, str]]:
 MATRIX_KEY = "matrix"
 CHART_KEY = "charts"
 
+# Sheets read out of an existing .xlsx and carried through unchanged, keyed by
+# the name used to select them. PTA is picked up automatically when a PTA.xlsx
+# sits beside the DSI; anything else is added with --sheet Name=path.xlsx.
+EXTERNAL: Dict[str, Tuple[str, str]] = {}
+
+
+def discover_external(folder: str = ".") -> None:
+    """Register any recognised companion workbook found next to the DSI."""
+    for entry in sorted(os.listdir(folder or ".")):
+        stem, ext = os.path.splitext(entry)
+        if ext.lower() != ".xlsx":
+            continue
+        if stem.upper() == "PTA":
+            EXTERNAL.setdefault("pta", ("PTA", os.path.join(folder, entry)))
+
+
+def read_external(path: str) -> Tuple[List[str], List[List[str]]]:
+    """Read the first worksheet of an .xlsx into (headers, rows).
+
+    Reuses the reader already proven by dsi_to_excel.py rather than writing a
+    second one.
+    """
+    from dsi_to_excel import read_xlsx_sheet
+
+    return read_xlsx_sheet(path)
+
 
 def available_views(dsi: Dsi) -> List[Tuple[str, str, int]]:
     """``(key, label, row count)`` for every view with data in this file."""
@@ -88,6 +114,12 @@ def available_views(dsi: Dsi) -> List[Tuple[str, str, int]]:
         circuits = dsi["Harness circuit information"]
         if circuits.rows:
             out.append((MATRIX_KEY, "Option matrix (circuit x code)", len(circuits.rows)))
+    for key, (label, path) in EXTERNAL.items():
+        try:
+            _, rows = read_external(path)
+        except (OSError, KeyError, ValueError):
+            continue
+        out.append((key, "{} (from {})".format(label, os.path.basename(path)), len(rows)))
     return out
 
 
@@ -159,6 +191,32 @@ def build_view_workbook(dsi: Dsi, keys: Sequence[str], path: str) -> List[Tuple[
     sheets.append(overview)
 
     for key in keys:
+        if key in EXTERNAL:
+            label, source = EXTERNAL[key]
+            headers, rows = read_external(source)
+            if not rows:
+                continue
+            # Short headings in these sheets are single option codes marked X,
+            # so centre and narrow them the way the option matrix is treated.
+            narrow = {
+                i
+                for i, h in enumerate(headers)
+                if len(h) <= 6 and not h.lower().startswith(("option", "circuit", "rev"))
+            }
+            sheet = xlsx.Sheet(
+                label,
+                headers,
+                text_cols=set(range(len(headers))),
+                center_cols=narrow,
+                widths={i: 7.0 for i in narrow},
+            )
+            for row in rows:
+                sheet.add(row)
+            sheets.append(sheet)
+            overview.add(["{} (from {})".format(label, os.path.basename(source)), str(len(rows))])
+            summary.append((label, len(headers), len(rows)))
+            continue
+
         if key == CHART_KEY:
             sheet, n = build_chart_sheet(dsi)
             if sheet is None:
@@ -517,6 +575,8 @@ def choose_elements(dsi: Dsi) -> Optional[List[str]]:
         view = views_mod.VIEWS_BY_KEY.get(key)
         if key == CHART_KEY:
             group = "Components"
+        elif key in EXTERNAL:
+            group = "Other"
         else:
             group = view.group if view else "Variance"
         numbering.append(key)
@@ -608,13 +668,15 @@ def flow_view(path: Optional[str] = None, keys: Optional[Sequence[str]] = None,
     if dsi is None:
         return 1
 
+    discover_external(os.path.dirname(os.path.abspath(path)) if os.path.dirname(path) else ".")
+
     if keys is None:
         keys = choose_elements(dsi)
         if not keys:
             print("\nCancelled.")
             return 1
     else:
-        known = set(views_mod.VIEWS_BY_KEY) | {MATRIX_KEY, CHART_KEY}
+        known = set(views_mod.VIEWS_BY_KEY) | {MATRIX_KEY, CHART_KEY} | set(EXTERNAL)
         bad = [k for k in keys if k not in known]
         if bad:
             print("Unknown element(s): {}".format(", ".join(bad)))
@@ -722,6 +784,9 @@ USAGE = """DSI Toolkit
 Options
   -o, --out PATH        output .xlsx (default is derived from the input names)
   --elements a,b,c      view mode: element keys, skips the menu
+  --sheet Name=file.xlsx  view mode: carry a sheet in from an existing workbook.
+                        Repeatable. A PTA.xlsx next to the DSI is picked up
+                        automatically as element 'pta'.
   --all-rows            compare mode: keep unchanged rows in section sheets
   --list-elements       print the element keys and exit
 """
@@ -764,7 +829,22 @@ def main(argv: Sequence[str]) -> int:
             if not args:
                 print("--elements needs a comma-separated list")
                 return 2
-            elements = [e.strip() for e in args.pop(0).split(",") if e.strip()]
+            # Lowercased: every element key is lowercase, including the ones
+            # --sheet registers from a possibly mixed-case sheet name.
+            elements = [e.strip().lower() for e in args.pop(0).split(",") if e.strip()]
+        elif arg == "--sheet":
+            if not args:
+                print("--sheet needs Name=path.xlsx")
+                return 2
+            spec = args.pop(0)
+            if "=" in spec:
+                label, source = spec.split("=", 1)
+            else:
+                label, source = os.path.splitext(os.path.basename(spec))[0], spec
+            if not os.path.isfile(source):
+                print("no such file: {}".format(source))
+                return 2
+            EXTERNAL[label.lower()] = (label, source)
         elif arg == "--all-rows":
             all_rows = True
         elif arg.startswith("-"):
