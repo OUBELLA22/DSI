@@ -55,6 +55,14 @@ Private Const CIRCUIT_OPTION_START As Long = 36  ' option codes start here
 Private Const CIRCUIT_DESC_FIELD As Long = 26    ' human-readable description
 Private Const PTA_INCLUDE_RAW_LIST As Boolean = True  ' False drops Option 1..n
 
+' Diversity tree. Input is typed by hand, not read from a DSI.
+Private Const DIV_INPUT As String = "DIVERSITY INPUT"
+Private Const DIV_TREE As String = "DIVERSITY TREE"
+Private Const DIV_LIST As String = "DIVERSITY LIST"
+Private Const DIV_RULES_MARKER As String = "RULES"
+Private Const DIV_MAX_COMBOS As Long = 50000     ' refuse to explode a sheet
+Private Const DIV_FIRST_CODE_ROW As Long = 3     ' row 1 titles, row 2 header
+
 '==============================================================================
 ' ENTRY POINT
 '==============================================================================
@@ -1631,3 +1639,381 @@ Fail:
     Application.ScreenUpdating = True
     MsgBox "PTA table failed:" & vbCrLf & Err.Description, vbCritical, "DSI Toolkit"
 End Sub
+
+
+
+'==============================================================================
+' DIVERSITY TREE
+'
+' Unlike everything else in this module, the input here is typed by hand. No DSI
+' is read. The user declares option families and their codes, then rules that
+' remove impossible combinations, and the macro expands the full tree.
+'
+' Two macros, run in order:
+'
+'   DSI_DiversityInput   asks how many families and builds the input sheet
+'   DSI_DiversityTree    expands the tree and applies the rules
+'
+' Input sheet layout (DIVERSITY INPUT):
+'
+'            B            C           D        E        F
+'   1  TITLE MOTORESATION DIRECTION   AIBAG    ALARM    HP
+'   2  CODES ----------------------------------------------
+'   3        DXD05        DCX01       DNF11    DAB00    DHB09
+'   4        DXD04        DCX02       DNF15    DAB13    DHB11
+'   5        DXD00
+'
+'   then, below a cell in column A containing RULES:
+'
+'   TYPE     CODES              THEN
+'   EXCLUDE  DXD00 + DCX02
+'   REQUIRE  DXD04 + DNF15      DHB11
+'
+' Rule meanings:
+'
+'   EXCLUDE  a + b      no combination may contain all of these codes.
+'                       "there is no DCX02 in DXD00"
+'   REQUIRE  a + b -> c a combination containing all of a, b must also contain
+'                       c, so the alternatives to c in c's own family are
+'                       dropped. "in DXD04 with DNF15 it is always DHB11"
+'
+' The count is the product of the family sizes, so it grows fast: 3x2x2x2x2 is
+' 48, but adding two more two-code families makes it 192. DIV_MAX_COMBOS is the
+' brake.
+'
+' Output, two sheets:
+'
+'   DIVERSITY TREE  a value is printed only where it changes, which produces the
+'                   indented tree. Rows killed by a rule stay in place, struck
+'                   through and red, with the rule that killed them named. They
+'                   are kept rather than deleted so the tree keeps its shape and
+'                   you can see what was excluded and why.
+'   DIVERSITY LIST  the same rows with every column filled and a filter, for
+'                   sorting or feeding another tool. The tree is for reading,
+'                   the list is for working.
+'==============================================================================
+Public Sub DSI_DiversityInput()
+    Dim answer As String, famCount As Long, i As Long
+    Dim ws As Worksheet, ruleRow As Long
+
+    answer = InputBox("How many option families (columns)?" & vbCrLf & vbCrLf & _
+                      "One per column, for example MOTORESATION, DIRECTION," & vbCrLf & _
+                      "AIBAG, ALARM, HP would be 5.", "Diversity tree", "5")
+    If Len(Trim$(answer)) = 0 Then Exit Sub
+    If Not IsNumeric(answer) Then
+        MsgBox "Enter a number.", vbExclamation, "Diversity tree"
+        Exit Sub
+    End If
+    famCount = CLng(answer)
+    If famCount < 1 Or famCount > 40 Then
+        MsgBox "Between 1 and 40 families.", vbExclamation, "Diversity tree"
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Set ws = FreshSheet(DIV_INPUT)
+
+    ws.Range("A1").Value = "TITLE"
+    ws.Range("A2").Value = "CODES"
+    ws.Range("A1:A2").Font.Bold = True
+    For i = 1 To famCount
+        ws.Cells(1, i + 1).Value = "FAMILY " & i
+        ws.Cells(1, i + 1).Interior.Color = C_HEADER
+        ws.Cells(1, i + 1).Font.Color = RGB(255, 255, 255)
+        ws.Cells(1, i + 1).Font.Bold = True
+        ws.Columns(i + 1).ColumnWidth = 14
+    Next i
+    ws.Columns(1).ColumnWidth = 10
+
+    ruleRow = DIV_FIRST_CODE_ROW + 25
+    ws.Cells(ruleRow, 1).Value = DIV_RULES_MARKER
+    ws.Cells(ruleRow, 1).Font.Bold = True
+    ws.Cells(ruleRow + 1, 1).Value = "TYPE"
+    ws.Cells(ruleRow + 1, 2).Value = "CODES"
+    ws.Cells(ruleRow + 1, 3).Value = "THEN"
+    StyleHeader ws.Cells(ruleRow + 1, 1).Resize(1, 3)
+    ws.Cells(ruleRow + 2, 1).Value = "EXCLUDE"
+    ws.Cells(ruleRow + 2, 2).Value = "CODE1 + CODE2"
+    ws.Cells(ruleRow + 3, 1).Value = "REQUIRE"
+    ws.Cells(ruleRow + 3, 2).Value = "CODE1 + CODE2"
+    ws.Cells(ruleRow + 3, 3).Value = "CODE3"
+    ws.Cells(ruleRow + 2, 1).Resize(2, 3).Font.Italic = True
+    ws.Cells(ruleRow + 2, 1).Resize(2, 3).Font.Color = RGB(150, 150, 150)
+
+    ws.Range("A1").Select
+    Application.ScreenUpdating = True
+
+    MsgBox "Input sheet ready: " & DIV_INPUT & vbCrLf & vbCrLf & _
+           "1. Replace FAMILY 1.." & famCount & " with your titles." & vbCrLf & _
+           "2. Type the codes down each column from row " & DIV_FIRST_CODE_ROW & "." & vbCrLf & _
+           "3. Fill in the RULES block, or delete the grey example rows." & vbCrLf & vbCrLf & _
+           "Then run DSI_DiversityTree.", vbInformation, "Diversity tree"
+End Sub
+
+Public Sub DSI_DiversityTree()
+    Dim ws As Worksheet, wsT As Worksheet, wsL As Worksheet
+    Dim famCount As Long, i As Long, rr As Long
+    Dim titles() As String, codes() As Variant, sizes() As Long
+    Dim total As Long, idx As Long, rest As Long
+    Dim combo() As String, prev() As String, firstDiff As Long
+    Dim ruleRow As Long, nRules As Long
+    Dim rTypes() As String, rCodes() As Variant, rThen() As String
+    Dim killedBy As String, nKilled As Long
+    Dim treeData() As Variant, listData() As Variant
+    Dim killedRows As Collection, codeList As Collection, k As Variant
+    Dim v As String, present As Object
+
+    On Error GoTo Fail
+    Set ws = SheetIfExists(DIV_INPUT)
+    If ws Is Nothing Then
+        MsgBox "No sheet called '" & DIV_INPUT & "'." & vbCrLf & _
+               "Run DSI_DiversityInput first.", vbExclamation, "Diversity tree"
+        Exit Sub
+    End If
+
+    ' -- families ---------------------------------------------------------
+    famCount = 0
+    Do While Len(Trim$(CStr(ws.Cells(1, famCount + 2).Value))) > 0
+        famCount = famCount + 1
+        If famCount > 40 Then Exit Do
+    Loop
+    If famCount = 0 Then
+        MsgBox "No family titles found in row 1.", vbExclamation, "Diversity tree"
+        Exit Sub
+    End If
+
+    ruleRow = FindRuleRow(ws)
+
+    ReDim titles(1 To famCount)
+    ReDim codes(1 To famCount)
+    ReDim sizes(1 To famCount)
+    total = 1
+    For i = 1 To famCount
+        titles(i) = Trim$(CStr(ws.Cells(1, i + 1).Value))
+        Set codeList = New Collection
+        rr = DIV_FIRST_CODE_ROW
+        Do
+            ' Stop at the RULES block, so codes and rules cannot run together.
+            If ruleRow > 0 And rr >= ruleRow Then Exit Do
+            v = Trim$(CStr(ws.Cells(rr, i + 1).Value))
+            If Len(v) = 0 Then Exit Do
+            codeList.Add v
+            rr = rr + 1
+        Loop
+        If codeList.Count = 0 Then
+            MsgBox "Family '" & titles(i) & "' has no codes.", vbExclamation, "Diversity tree"
+            Exit Sub
+        End If
+        Set codes(i) = codeList
+        sizes(i) = codeList.Count
+        total = total * sizes(i)
+        If total > DIV_MAX_COMBOS Then
+            MsgBox "That would produce more than " & DIV_MAX_COMBOS & " combinations." & vbCrLf & _
+                   "Reduce the families or codes.", vbExclamation, "Diversity tree"
+            Exit Sub
+        End If
+    Next i
+
+    ' -- rules ------------------------------------------------------------
+    nRules = 0
+    If ruleRow > 0 Then
+        ReDim rTypes(1 To 200)
+        ReDim rCodes(1 To 200)
+        ReDim rThen(1 To 200)
+        rr = ruleRow + 2
+        Do While rr <= ws.Rows.Count
+            v = UCase$(Trim$(CStr(ws.Cells(rr, 1).Value)))
+            If Len(v) = 0 Then Exit Do
+            If v = "EXCLUDE" Or v = "REQUIRE" Then
+                Set present = ParseRuleCodes(CStr(ws.Cells(rr, 2).Value))
+                ' The grey example rows use placeholder names; skip them.
+                If present.Count > 0 And Not present.Exists("CODE1") Then
+                    nRules = nRules + 1
+                    rTypes(nRules) = v
+                    Set rCodes(nRules) = present
+                    rThen(nRules) = UCase$(Trim$(CStr(ws.Cells(rr, 3).Value)))
+                End If
+            End If
+            rr = rr + 1
+            If rr > ruleRow + 210 Then Exit Do
+        Loop
+    End If
+
+    ' -- expand -----------------------------------------------------------
+    Application.ScreenUpdating = False
+    ReDim treeData(1 To total + 1, 1 To famCount + 2)
+    ReDim listData(1 To total + 1, 1 To famCount + 2)
+    For i = 1 To famCount
+        treeData(1, i) = titles(i)
+        listData(1, i) = titles(i)
+    Next i
+    treeData(1, famCount + 1) = "STATUS"
+    treeData(1, famCount + 2) = "RULE"
+    listData(1, famCount + 1) = "STATUS"
+    listData(1, famCount + 2) = "RULE"
+
+    ReDim combo(1 To famCount)
+    ReDim prev(1 To famCount)
+    For i = 1 To famCount
+        prev(i) = Chr$(1)
+    Next i
+    Set killedRows = New Collection
+    nKilled = 0
+
+    For idx = 0 To total - 1
+        ' Mixed-radix decode: last family varies fastest, which is what makes
+        ' the tree read top to bottom the way it is drawn by hand.
+        rest = idx
+        For i = famCount To 1 Step -1
+            combo(i) = CStr(codes(i)((rest Mod sizes(i)) + 1))
+            rest = rest \ sizes(i)
+        Next i
+
+        killedBy = RuleThatKills(combo, famCount, rTypes, rCodes, rThen, nRules)
+
+        firstDiff = famCount + 1
+        For i = 1 To famCount
+            If combo(i) <> prev(i) Then
+                firstDiff = i
+                Exit For
+            End If
+        Next i
+
+        rr = idx + 2
+        For i = 1 To famCount
+            If i >= firstDiff Then treeData(rr, i) = combo(i)
+            listData(rr, i) = combo(i)
+            prev(i) = combo(i)
+        Next i
+        If Len(killedBy) = 0 Then
+            treeData(rr, famCount + 1) = "OK"
+            listData(rr, famCount + 1) = "OK"
+        Else
+            treeData(rr, famCount + 1) = "REMOVED"
+            listData(rr, famCount + 1) = "REMOVED"
+            treeData(rr, famCount + 2) = killedBy
+            listData(rr, famCount + 2) = killedBy
+            killedRows.Add rr
+            nKilled = nKilled + 1
+        End If
+    Next idx
+
+    ' -- write ------------------------------------------------------------
+    Set wsT = FreshSheet(DIV_TREE)
+    wsT.Range("A1").Resize(total + 1, famCount + 2).Value = treeData
+    StyleHeader wsT.Range("A1").Resize(1, famCount + 2)
+    For i = 1 To famCount + 2
+        wsT.Columns(i).ColumnWidth = 14
+    Next i
+    For Each k In killedRows
+        wsT.Rows(CLng(k)).Font.Strikethrough = True
+        wsT.Rows(CLng(k)).Font.Color = RGB(156, 0, 6)
+    Next k
+
+    Set wsL = FreshSheet(DIV_LIST)
+    wsL.Range("A1").Resize(total + 1, famCount + 2).Value = listData
+    StyleHeader wsL.Range("A1").Resize(1, famCount + 2)
+    For i = 1 To famCount + 2
+        wsL.Columns(i).ColumnWidth = 14
+    Next i
+    wsL.Range("A1").Resize(1, famCount + 2).AutoFilter
+    For Each k In killedRows
+        wsL.Rows(CLng(k)).Font.Color = RGB(156, 0, 6)
+    Next k
+
+    wsT.Activate
+    wsT.Range("A2").Select
+    Application.ScreenUpdating = True
+
+    MsgBox "Diversity tree built." & vbCrLf & vbCrLf & _
+           "Families      " & famCount & vbCrLf & _
+           "Combinations  " & total & vbCrLf & _
+           "Rules applied " & nRules & vbCrLf & _
+           "Removed       " & nKilled & vbCrLf & _
+           "Valid         " & (total - nKilled) & vbCrLf & vbCrLf & _
+           "Sheets: " & DIV_TREE & " (indented) and " & DIV_LIST & " (filterable)", _
+           vbInformation, "Diversity tree"
+    Exit Sub
+Fail:
+    Application.ScreenUpdating = True
+    MsgBox "Diversity tree failed:" & vbCrLf & Err.Description, vbCritical, "Diversity tree"
+End Sub
+
+' Codes in a rule are written "A + B". Returned as a set so order and spacing
+' do not matter.
+Private Function ParseRuleCodes(ByVal text As String) As Object
+    Dim d As Object, parts As Variant, i As Long, v As String
+    Set d = CreateObject("Scripting.Dictionary")
+    parts = Split(UCase$(text), "+")
+    For i = LBound(parts) To UBound(parts)
+        v = Trim$(CStr(parts(i)))
+        If Len(v) > 0 Then d(v) = True
+    Next i
+    Set ParseRuleCodes = d
+End Function
+
+' Name of the first rule that removes this combination, or "" if it survives.
+Private Function RuleThatKills(ByRef combo() As String, ByVal famCount As Long, _
+                               ByRef rTypes() As String, ByRef rCodes() As Variant, _
+                               ByRef rThen() As String, ByVal nRules As Long) As String
+    Dim i As Long, j As Long, have As Object, allPresent As Boolean, k As Variant
+
+    If nRules = 0 Then RuleThatKills = "": Exit Function
+
+    Set have = CreateObject("Scripting.Dictionary")
+    For j = 1 To famCount
+        have(UCase$(combo(j))) = True
+    Next j
+
+    For i = 1 To nRules
+        allPresent = True
+        For Each k In rCodes(i).Keys
+            If Not have.Exists(CStr(k)) Then
+                allPresent = False
+                Exit For
+            End If
+        Next k
+        If allPresent Then
+            If rTypes(i) = "EXCLUDE" Then
+                RuleThatKills = "EXCLUDE " & JoinKeys(rCodes(i))
+                Exit Function
+            ElseIf rTypes(i) = "REQUIRE" Then
+                If Len(rThen(i)) > 0 Then
+                    If Not have.Exists(rThen(i)) Then
+                        RuleThatKills = "REQUIRE " & JoinKeys(rCodes(i)) & " -> " & rThen(i)
+                        Exit Function
+                    End If
+                End If
+            End If
+        End If
+    Next i
+    RuleThatKills = ""
+End Function
+
+Private Function JoinKeys(ByVal d As Object) As String
+    Dim k As Variant, s As String
+    For Each k In d.Keys
+        If Len(s) > 0 Then s = s & " + "
+        s = s & CStr(k)
+    Next k
+    JoinKeys = s
+End Function
+
+Private Function FindRuleRow(ByVal ws As Worksheet) As Long
+    Dim r As Long
+    For r = 1 To 5000
+        If UCase$(Trim$(CStr(ws.Cells(r, 1).Value))) = DIV_RULES_MARKER Then
+            FindRuleRow = r
+            Exit Function
+        End If
+    Next r
+    FindRuleRow = 0
+End Function
+
+Private Function SheetIfExists(ByVal nm As String) As Worksheet
+    Dim ws As Worksheet
+    On Error Resume Next        ' the sheet may simply not be there
+    Set ws = ThisWorkbook.Worksheets(nm)
+    On Error GoTo 0
+    Set SheetIfExists = ws
+End Function
