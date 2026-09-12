@@ -55,6 +55,11 @@ Private Const CIRCUIT_OPTION_START As Long = 36  ' option codes start here
 Private Const CIRCUIT_DESC_FIELD As Long = 26    ' human-readable description
 Private Const PTA_INCLUDE_RAW_LIST As Boolean = True  ' False drops Option 1..n
 
+' Button menu. 5 is msoShapeRoundedRectangle, written as a literal so the
+' module does not depend on a reference to the Office object library.
+Private Const MENU_SHEET As String = "DSI TOOLKIT"
+Private Const SHAPE_ROUNDED As Long = 5
+
 ' Diversity tree. Input is typed by hand, not read from a DSI.
 Private Const DIV_INPUT As String = "DIVERSITY INPUT"
 Private Const DIV_TREE As String = "DIVERSITY TREE"
@@ -2017,3 +2022,209 @@ Private Function SheetIfExists(ByVal nm As String) As Worksheet
     On Error GoTo 0
     Set SheetIfExists = ws
 End Function
+
+
+
+'==============================================================================
+' BUTTON MENU
+'
+' A macro-enabled workbook cannot be shipped as a file: the VBA lives in a
+' compiled vbaProject.bin that has to be built by Excel itself. So instead the
+' module builds its own front page. Run DSI_BuildMenu once after importing and
+' you get a sheet of buttons, each wired to a macro, with what it does and what
+' it produces written next to it.
+'
+' Run from Alt+F8 -> DSI_BuildMenu
+'==============================================================================
+Public Sub DSI_BuildMenu()
+    Dim ws As Worksheet, si As Long, atRow As Long
+
+    Application.ScreenUpdating = False
+    On Error GoTo Fail
+
+    Set ws = FreshSheet(MENU_SHEET)
+    ' FreshSheet clears cells but not drawings, and buttons are drawings.
+    ' Backwards, because deleting renumbers the collection.
+    For si = ws.Shapes.Count To 1 Step -1
+        ws.Shapes(si).Delete
+    Next si
+
+    ws.Cells.Interior.Color = RGB(255, 255, 255)
+    ws.Range("B2").Value = "DSI TOOLKIT"
+    ws.Range("B2").Font.Size = 20
+    ws.Range("B2").Font.Bold = True
+    ws.Range("B3").Value = "Capital HarnessXC / ModularXC"
+    ws.Range("B3").Font.Italic = True
+    ws.Range("B3").Font.Color = RGB(120, 120, 120)
+
+    ws.Columns(1).ColumnWidth = 3
+    ws.Columns(2).ColumnWidth = 30
+    ws.Columns(3).ColumnWidth = 2
+    ws.Columns(4).ColumnWidth = 95
+
+    atRow = 5
+    atRow = AddMenuSection(ws, atRow, "READ ONE DSI FILE")
+    atRow = AddMenuButton(ws, atRow, "Check a DSI file", "DSI_Census", _
+        "Reads a DSI and lists every section with its row and field counts. " & _
+        "Run this first on any new file. Sheet: CENSUS.")
+    atRow = AddMenuButton(ws, atRow, "Elements to Excel", "DSI_Run", _
+        "Asks 1 file or 2. With 1 it lists what the file contains and you pick: " & _
+        "connectors, splices, terminals, seals, plugs, clips, wires, branches, " & _
+        "insulations, circuits and more. One sheet per element.")
+    atRow = AddMenuButton(ws, atRow, "Connector cavity charts", "DSI_ConnectorCharts", _
+        "One block per connector: cavity, wire, wire spec, plating, far-end " & _
+        "connector and cavity, option expression, and any cavity plug. " & _
+        "Sheet: Connector Charts.")
+    atRow = AddMenuButton(ws, atRow, "PTA table", "DSI_PTATable", _
+        "Circuit x option-code grid. Circuit, revision, description, the raw " & _
+        "code list, then one column per declared code marked X. " & _
+        "Sheet: PTA Table.")
+
+    atRow = atRow + 6
+    atRow = AddMenuSection(ws, atRow, "COMPARE TWO DSI FILES")
+    atRow = AddMenuButton(ws, atRow, "Compare two files", "DSI_Run", _
+        "Choose 2 at the prompt. Produces SYNTHESIS with the counts and the " & _
+        "match key used per section, DIFFERENCES with every delta as one row, " & _
+        "and a side-by-side sheet per changed section. " & _
+        "Yellow = modified, green = added, red = removed, grey = not compared.")
+
+    atRow = atRow + 6
+    atRow = AddMenuSection(ws, atRow, "DIVERSITY TREE  (typed by hand, no DSI)")
+    atRow = AddMenuButton(ws, atRow, "1. Create input sheet", "DSI_DiversityInput", _
+        "Asks how many option families, then builds the input sheet for you to " & _
+        "fill in. Sheet: DIVERSITY INPUT.")
+    atRow = AddMenuButton(ws, atRow, "2. Load worked example", "DSI_DiversityExample", _
+        "Fills the input sheet with a complete 5-family example and two rules, " & _
+        "so you can see the format and test straight away.")
+    atRow = AddMenuButton(ws, atRow, "3. Build the tree", "DSI_DiversityTree", _
+        "Expands every combination and applies the rules. DIVERSITY TREE is the " & _
+        "indented tree with removed rows struck through. DIVERSITY LIST is the " & _
+        "same rows filled in with a filter.")
+
+    atRow = atRow + 6
+    ws.Cells(atRow, 2).Value = "RULES"
+    ws.Cells(atRow, 2).Font.Bold = True
+    ws.Cells(atRow + 1, 2).Value = "EXCLUDE   A + B"
+    ws.Cells(atRow + 1, 4).Value = "No combination may contain all of these codes.  ""there is no DCX02 in DXD00"""
+    ws.Cells(atRow + 2, 2).Value = "REQUIRE   A + B    C"
+    ws.Cells(atRow + 2, 4).Value = "A combination with A and B must also have C, so C's alternatives are dropped.  ""in DXD04 with DNF15 it is always DHB11"""
+    ws.Cells(atRow + 1, 2).Resize(2, 1).Font.Name = "Consolas"
+
+    atRow = atRow + 5
+    ws.Cells(atRow, 2).Value = "REMEMBER"
+    ws.Cells(atRow, 2).Font.Bold = True
+    ws.Cells(atRow + 1, 4).Value = "Save this workbook as .xlsm, not .xlsx, or the macros are discarded when you close it."
+    ws.Cells(atRow + 2, 4).Value = "Output sheets are rewritten each run. Anything you typed on them is lost, so keep your own notes elsewhere."
+    ws.Cells(atRow + 1, 4).Resize(2, 1).Font.Color = RGB(156, 0, 6)
+
+    ws.Range("B2").Select
+    Application.ScreenUpdating = True
+    Exit Sub
+Fail:
+    Application.ScreenUpdating = True
+    MsgBox "Could not build the menu:" & vbCrLf & Err.Description, vbCritical, "DSI Toolkit"
+End Sub
+
+Private Function AddMenuSection(ByVal ws As Worksheet, ByVal atRow As Long, _
+                                ByVal caption As String) As Long
+    ws.Cells(atRow, 2).Value = caption
+    ws.Cells(atRow, 2).Font.Bold = True
+    ws.Cells(atRow, 2).Font.Size = 12
+    ws.Cells(atRow, 2).Resize(1, 3).Interior.Color = RGB(238, 238, 238)
+    AddMenuSection = atRow + 2
+End Function
+
+' One button plus its explanation. Returns the next free row.
+Private Function AddMenuButton(ByVal ws As Worksheet, ByVal atRow As Long, _
+                               ByVal caption As String, ByVal macroName As String, _
+                               ByVal blurb As String) As Long
+    Dim shp As Shape, cel As Range
+
+    Set cel = ws.Cells(atRow, 2)
+    Set shp = ws.Shapes.AddShape(SHAPE_ROUNDED, cel.Left, cel.Top, 190, 30)
+    shp.Name = "btn_" & macroName & "_" & atRow
+    shp.OnAction = macroName
+    shp.Fill.ForeColor.RGB = C_HEADER
+    shp.Line.ForeColor.RGB = C_HEADER
+    With shp.TextFrame
+        .Characters.Text = caption
+        .Characters.Font.Bold = True
+        .Characters.Font.Size = 10
+        .Characters.Font.Color = RGB(255, 255, 255)
+        .HorizontalAlignment = xlHAlignCenter
+        .VerticalAlignment = xlVAlignCenter
+    End With
+
+    ws.Cells(atRow, 4).Value = blurb
+    ws.Cells(atRow, 4).WrapText = True
+    ws.Cells(atRow, 4).VerticalAlignment = xlVAlignTop
+    ws.Rows(atRow).RowHeight = 15
+    ws.Rows(atRow + 1).RowHeight = 15
+    ws.Cells(atRow, 4).Resize(3, 1).Merge
+    AddMenuButton = atRow + 3
+End Function
+
+'==============================================================================
+' Worked example for the diversity tree, so the format is visible without
+' having to type it. Same data as the reference tree: 3x2x2x2x2 is 48
+' combinations, the EXCLUDE rule removes 8 and the REQUIRE rule a further 4,
+' leaving 36 valid.
+'==============================================================================
+Public Sub DSI_DiversityExample()
+    Dim ws As Worksheet, ruleRow As Long, i As Long
+    Dim fams As Variant, cds As Variant, col As Long, parts As Variant
+
+    Application.ScreenUpdating = False
+    On Error GoTo Fail
+
+    Set ws = FreshSheet(DIV_INPUT)
+    fams = Array("MOTORESATION", "DIRECTION", "AIBAG", "ALARM", "HP")
+    cds = Array("DXD05|DXD04|DXD00", "DCX01|DCX02", "DNF11|DNF15", _
+                "DAB00|DAB13", "DHB09|DHB11")
+
+    ws.Range("A1").Value = "TITLE"
+    ws.Range("A2").Value = "CODES"
+    ws.Range("A1:A2").Font.Bold = True
+    ws.Columns(1).ColumnWidth = 10
+
+    For col = LBound(fams) To UBound(fams)
+        ws.Cells(1, col + 2).Value = fams(col)
+        ws.Cells(1, col + 2).Interior.Color = C_HEADER
+        ws.Cells(1, col + 2).Font.Color = RGB(255, 255, 255)
+        ws.Cells(1, col + 2).Font.Bold = True
+        ws.Columns(col + 2).ColumnWidth = 14
+        parts = Split(CStr(cds(col)), "|")
+        For i = LBound(parts) To UBound(parts)
+            ws.Cells(DIV_FIRST_CODE_ROW + i, col + 2).Value = parts(i)
+        Next i
+    Next col
+
+    ruleRow = DIV_FIRST_CODE_ROW + 25
+    ws.Cells(ruleRow, 1).Value = DIV_RULES_MARKER
+    ws.Cells(ruleRow, 1).Font.Bold = True
+    ws.Cells(ruleRow + 1, 1).Value = "TYPE"
+    ws.Cells(ruleRow + 1, 2).Value = "CODES"
+    ws.Cells(ruleRow + 1, 3).Value = "THEN"
+    StyleHeader ws.Cells(ruleRow + 1, 1).Resize(1, 3)
+    ws.Cells(ruleRow + 2, 1).Value = "EXCLUDE"
+    ws.Cells(ruleRow + 2, 2).Value = "DXD00 + DCX02"
+    ws.Cells(ruleRow + 3, 1).Value = "REQUIRE"
+    ws.Cells(ruleRow + 3, 2).Value = "DXD04 + DNF15"
+    ws.Cells(ruleRow + 3, 3).Value = "DHB11"
+    ws.Columns(2).ColumnWidth = 18
+    ws.Columns(3).ColumnWidth = 14
+
+    ws.Range("A1").Select
+    Application.ScreenUpdating = True
+
+    MsgBox "Example loaded into '" & DIV_INPUT & "'." & vbCrLf & vbCrLf & _
+           "5 families, 3x2x2x2x2 = 48 combinations." & vbCrLf & _
+           "EXCLUDE DXD00 + DCX02 removes 8." & vbCrLf & _
+           "REQUIRE DXD04 + DNF15 -> DHB11 removes 4." & vbCrLf & _
+           "36 should remain valid." & vbCrLf & vbCrLf & _
+           "Now run DSI_DiversityTree.", vbInformation, "Diversity tree"
+    Exit Sub
+Fail:
+    Application.ScreenUpdating = True
+    MsgBox "Could not load the example:" & vbCrLf & Err.Description, vbCritical
+End Sub
