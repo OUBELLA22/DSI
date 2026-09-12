@@ -48,6 +48,13 @@ Private Const C_GREEN As Long = 13561798         ' added
 Private Const C_GREY As Long = 15921906          ' not compared
 Private Const C_HEADER As Long = 6299648         ' dark blue
 
+' Circuit record layout, used by the PTA table. These live here, not next to
+' DSI_PTATable, because VBA only accepts module-level declarations in the
+' declarations section above the first procedure.
+Private Const CIRCUIT_OPTION_START As Long = 36  ' option codes start here
+Private Const CIRCUIT_DESC_FIELD As Long = 26    ' human-readable description
+Private Const PTA_INCLUDE_RAW_LIST As Boolean = True  ' False drops Option 1..n
+
 '==============================================================================
 ' ENTRY POINT
 '==============================================================================
@@ -1461,10 +1468,8 @@ End Sub
 '
 ' Run from Alt+F8 -> DSI_PTATable
 '==============================================================================
-Private Const PTA_INCLUDE_RAW_LIST As Boolean = True
-Private Const CIRCUIT_OPTION_START As Long = 36
-Private Const CIRCUIT_DESC_FIELD As Long = 26
-
+' Constants for this macro are in the declarations section at the top of the
+' module: CIRCUIT_OPTION_START, CIRCUIT_DESC_FIELD, PTA_INCLUDE_RAW_LIST.
 Public Sub DSI_PTATable()
     Dim path As String, dsi As Object
     Dim circuits As Collection, codesSec As Collection
