@@ -1430,3 +1430,199 @@ Private Sub WriteChartSheet(ByVal outRows As Collection, ByVal kinds As Collecti
     Next c
     ws.Range("A1").Select
 End Sub
+
+
+
+'==============================================================================
+' PTA TABLE  (circuit x option code)
+'
+' Structure was established from the reference PTA.xlsx:
+'
+'   Circuit ID | Rev | Description | Option 1..n | <one column per option code>
+'
+'   Circuit ID   circuit field 0
+'   Rev          circuit field 1
+'   Description  circuit field 26
+'   Option 1..n  the raw option-code tail, circuit fields 36 to the end,
+'                verbatim, one code per column
+'   code columns one per code declared in Composite Option Codes, in
+'                DECLARATION order, marked X where the circuit carries it
+'
+' With the raw list included that comes to 55 columns, the same as the
+' reference file.
+'
+' Every DECLARED code gets a column, including codes no circuit happens to use.
+' That is deliberate: if the columns were only the codes in use, two harnesses
+' would produce different column sets and could not be laid side by side or
+' diffed. The reference PTA keeps all of them for the same reason.
+'
+' A code a circuit references without declaring is appended at the end rather
+' than dropped, because that is a real inconsistency in the export.
+'
+' Run from Alt+F8 -> DSI_PTATable
+'==============================================================================
+Private Const PTA_INCLUDE_RAW_LIST As Boolean = True
+Private Const CIRCUIT_OPTION_START As Long = 36
+Private Const CIRCUIT_DESC_FIELD As Long = 26
+
+Public Sub DSI_PTATable()
+    Dim path As String, dsi As Object
+    Dim circuits As Collection, codesSec As Collection
+    Dim declared As Collection, codeIdx As Object, extras As Object
+    Dim tails As Collection, tail As Collection, carried As Object
+    Dim codeNames() As String, ex() As String
+    Dim r As Variant, k As Variant, v As String, tmp As String
+    Dim i As Long, j As Long, n As Long
+    Dim tailMax As Long, nCodes As Long, hdrOff As Long
+    Dim data() As Variant, rr As Long, cc As Long
+    Dim ws As Worksheet
+
+    path = PickFile("Select the DSI file")
+    If Len(path) = 0 Then Exit Sub
+
+    Application.ScreenUpdating = False
+    On Error GoTo Fail
+
+    Set dsi = ParseDSI(path)
+    Set circuits = SectionRows(dsi, "Harness circuit information")
+    Set codesSec = SectionRows(dsi, "Composite Option Codes")
+
+    If circuits.Count = 0 Then
+        Application.ScreenUpdating = True
+        MsgBox "This file has no circuit information.", vbExclamation, "DSI Toolkit"
+        Exit Sub
+    End If
+
+    ' Declared codes, keeping declaration order.
+    Set codeIdx = CreateObject("Scripting.Dictionary")
+    Set declared = New Collection
+    For Each r In codesSec
+        v = Trim$(Fld(r, 0))
+        If Len(v) > 0 Then
+            If Not codeIdx.Exists(v) Then
+                declared.Add v
+                codeIdx.Add v, declared.Count
+            End If
+        End If
+    Next r
+
+    ' Per-circuit code tail. The flags sitting before the codes are skipped.
+    Set tails = New Collection
+    Set extras = CreateObject("Scripting.Dictionary")
+    tailMax = 0
+    For Each r In circuits
+        Set tail = New Collection
+        For i = CIRCUIT_OPTION_START To UBound(r)
+            v = Trim$(Fld(r, i))
+            If Len(v) > 0 Then
+                If StrComp(v, "true", vbTextCompare) <> 0 Then
+                    If StrComp(v, "false", vbTextCompare) <> 0 Then
+                        tail.Add v
+                        If Not codeIdx.Exists(v) Then extras(v) = True
+                    End If
+                End If
+            End If
+        Next i
+        If tail.Count > tailMax Then tailMax = tail.Count
+        tails.Add tail
+    Next r
+
+    nCodes = declared.Count + extras.Count
+    If nCodes = 0 Then
+        Application.ScreenUpdating = True
+        MsgBox "No option codes found in this file.", vbExclamation, "DSI Toolkit"
+        Exit Sub
+    End If
+
+    ReDim codeNames(1 To nCodes)
+    For i = 1 To declared.Count
+        codeNames(i) = declared(i)
+    Next i
+
+    ' Undeclared codes, sorted, after the declared ones.
+    If extras.Count > 0 Then
+        ReDim ex(1 To extras.Count)
+        n = 1
+        For Each k In extras.Keys
+            ex(n) = CStr(k)
+            n = n + 1
+        Next k
+        For i = 2 To extras.Count
+            tmp = ex(i)
+            j = i - 1
+            Do While j >= 1
+                If ex(j) <= tmp Then Exit Do
+                ex(j + 1) = ex(j)
+                j = j - 1
+            Loop
+            ex(j + 1) = tmp
+        Next i
+        For i = 1 To extras.Count
+            codeNames(declared.Count + i) = ex(i)
+        Next i
+    End If
+
+    hdrOff = 3
+    If PTA_INCLUDE_RAW_LIST Then hdrOff = 3 + tailMax
+
+    ReDim data(1 To circuits.Count + 1, 1 To hdrOff + nCodes)
+    data(1, 1) = "Circuit ID"
+    data(1, 2) = "Rev"
+    data(1, 3) = "Description"
+    If PTA_INCLUDE_RAW_LIST Then
+        For i = 1 To tailMax
+            data(1, 3 + i) = "Option " & i
+        Next i
+    End If
+    For i = 1 To nCodes
+        data(1, hdrOff + i) = codeNames(i)
+    Next i
+
+    rr = 2
+    i = 1
+    For Each r In circuits
+        Set tail = tails(i)
+        data(rr, 1) = Fld(r, 0)
+        data(rr, 2) = Fld(r, 1)
+        data(rr, 3) = Fld(r, CIRCUIT_DESC_FIELD)
+        Set carried = CreateObject("Scripting.Dictionary")
+        For cc = 1 To tail.Count
+            carried(CStr(tail(cc))) = True
+            If PTA_INCLUDE_RAW_LIST Then data(rr, 3 + cc) = tail(cc)
+        Next cc
+        For cc = 1 To nCodes
+            If carried.Exists(codeNames(cc)) Then data(rr, hdrOff + cc) = "X"
+        Next cc
+        rr = rr + 1
+        i = i + 1
+    Next r
+
+    Set ws = FreshSheet("PTA Table")
+    ws.Range("A1").Resize(UBound(data, 1), UBound(data, 2)).Value = data
+    StyleHeader ws.Range("A1").Resize(1, UBound(data, 2))
+
+    ws.Columns(1).ColumnWidth = 14
+    ws.Columns(2).ColumnWidth = 6
+    ws.Columns(3).ColumnWidth = 60
+    For cc = 4 To hdrOff
+        ws.Columns(cc).ColumnWidth = 10
+    Next cc
+    ' Single-code columns are one character wide in practice, so narrow them.
+    For cc = hdrOff + 1 To hdrOff + nCodes
+        ws.Columns(cc).ColumnWidth = 7
+        ws.Columns(cc).HorizontalAlignment = xlCenter
+    Next cc
+    ws.Range("A1").Select
+
+    Application.ScreenUpdating = True
+    MsgBox "PTA table written." & vbCrLf & vbCrLf & _
+           "Circuits      " & circuits.Count & vbCrLf & _
+           "Option codes  " & nCodes & " (" & declared.Count & " declared" & _
+           IIf(extras.Count > 0, ", " & extras.Count & " used but NOT declared", "") & ")" & vbCrLf & _
+           "Columns       " & (hdrOff + nCodes) & vbCrLf & vbCrLf & _
+           "Sheet: PTA Table", vbInformation, "DSI Toolkit"
+    Exit Sub
+Fail:
+    Application.ScreenUpdating = True
+    MsgBox "PTA table failed:" & vbCrLf & Err.Description, vbCritical, "DSI Toolkit"
+End Sub
