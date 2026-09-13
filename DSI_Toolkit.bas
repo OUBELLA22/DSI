@@ -66,7 +66,9 @@ Private Const DIV_TREE As String = "DIVERSITY TREE"
 Private Const DIV_LIST As String = "DIVERSITY LIST"
 Private Const DIV_RULES_MARKER As String = "RULES"
 Private Const DIV_MAX_COMBOS As Long = 50000     ' refuse to explode a sheet
-Private Const DIV_FIRST_CODE_ROW As Long = 3     ' row 1 titles, row 2 header
+' Row 1 holds the titles, so codes start on row 2 -- the same row as the CODES
+' label in column A, which is where anyone naturally starts typing.
+Private Const DIV_FIRST_CODE_ROW As Long = 2
 
 '==============================================================================
 ' ENTRY POINT
@@ -1719,8 +1721,9 @@ Public Sub DSI_DiversityInput()
     Set ws = FreshSheet(DIV_INPUT)
 
     ws.Range("A1").Value = "TITLE"
-    ws.Range("A2").Value = "CODES"
-    ws.Range("A1:A2").Font.Bold = True
+    ws.Cells(DIV_FIRST_CODE_ROW, 1).Value = "CODES"
+    ws.Range("A1").Font.Bold = True
+    ws.Cells(DIV_FIRST_CODE_ROW, 1).Font.Bold = True
     For i = 1 To famCount
         ws.Cells(1, i + 1).Value = "FAMILY " & i
         ws.Cells(1, i + 1).Interior.Color = C_HEADER
@@ -1737,22 +1740,26 @@ Public Sub DSI_DiversityInput()
     ws.Cells(ruleRow + 1, 2).Value = "CODES"
     ws.Cells(ruleRow + 1, 3).Value = "THEN"
     StyleHeader ws.Cells(ruleRow + 1, 1).Resize(1, 3)
-    ws.Cells(ruleRow + 2, 1).Value = "EXCLUDE"
-    ws.Cells(ruleRow + 2, 2).Value = "CODE1 + CODE2"
-    ws.Cells(ruleRow + 3, 1).Value = "REQUIRE"
-    ws.Cells(ruleRow + 3, 2).Value = "CODE1 + CODE2"
-    ws.Cells(ruleRow + 3, 3).Value = "CODE3"
-    ws.Cells(ruleRow + 2, 1).Resize(2, 3).Font.Italic = True
-    ws.Cells(ruleRow + 2, 1).Resize(2, 3).Font.Color = RGB(150, 150, 150)
+    ' Left blank on purpose. A pre-filled EXCLUDE/REQUIRE row with an empty
+    ' CODES cell is silently ignored, which looks like the rule ran.
+    ws.Cells(ruleRow + 2, 4).Value = "Example:   EXCLUDE   DXD00 + DCX02"
+    ws.Cells(ruleRow + 3, 4).Value = "Example:   REQUIRE   DXD04 + DNF15      DHB11"
+    ws.Cells(ruleRow + 2, 4).Resize(2, 1).Font.Italic = True
+    ws.Cells(ruleRow + 2, 4).Resize(2, 1).Font.Color = RGB(150, 150, 150)
+    ws.Columns(4).ColumnWidth = 50
 
     ws.Range("A1").Select
     Application.ScreenUpdating = True
 
     MsgBox "Input sheet ready: " & DIV_INPUT & vbCrLf & vbCrLf & _
            "1. Replace FAMILY 1.." & famCount & " with your titles." & vbCrLf & _
-           "2. Type the codes down each column from row " & DIV_FIRST_CODE_ROW & "." & vbCrLf & _
-           "3. Fill in the RULES block, or delete the grey example rows." & vbCrLf & vbCrLf & _
-           "Then run DSI_DiversityTree.", vbInformation, "Diversity tree"
+           "2. Type the codes down each column, starting on row " & _
+           DIV_FIRST_CODE_ROW & " next to CODES." & vbCrLf & _
+           "3. Under RULES, put EXCLUDE or REQUIRE in column A and the codes" & vbCrLf & _
+           "   in column B. See the grey examples in column D." & vbCrLf & vbCrLf & _
+           "Then run DSI_DiversityTree. It reports how many codes it found" & vbCrLf & _
+           "in each family, so check those numbers match what you typed.", _
+           vbInformation, "Diversity tree"
 End Sub
 
 Public Sub DSI_DiversityTree()
@@ -1767,6 +1774,7 @@ Public Sub DSI_DiversityTree()
     Dim treeData() As Variant, listData() As Variant
     Dim killedRows As Collection, codeList As Collection, k As Variant
     Dim v As String, present As Object
+    Dim lastCodeRow As Long, ruleRowsSeen As Long, counts As String
 
     On Error GoTo Fail
     Set ws = SheetIfExists(DIV_INPUT)
@@ -1796,21 +1804,25 @@ Public Sub DSI_DiversityTree()
     For i = 1 To famCount
         titles(i) = Trim$(CStr(ws.Cells(1, i + 1).Value))
         Set codeList = New Collection
-        rr = DIV_FIRST_CODE_ROW
-        Do
-            ' Stop at the RULES block, so codes and rules cannot run together.
-            If ruleRow > 0 And rr >= ruleRow Then Exit Do
+        ' Every non-blank cell down to the RULES block, rather than stopping at
+        ' the first blank. Columns have different lengths, so a short column
+        ' leaves gaps beside a long one, and stopping at a blank silently
+        ' truncated every family to the shortest. A gap is not the end.
+        lastCodeRow = ruleRow - 1
+        If ruleRow = 0 Then lastCodeRow = DIV_FIRST_CODE_ROW + 500
+        For rr = DIV_FIRST_CODE_ROW To lastCodeRow
             v = Trim$(CStr(ws.Cells(rr, i + 1).Value))
-            If Len(v) = 0 Then Exit Do
-            codeList.Add v
-            rr = rr + 1
-        Loop
+            If Len(v) > 0 Then codeList.Add v
+        Next rr
         If codeList.Count = 0 Then
-            MsgBox "Family '" & titles(i) & "' has no codes.", vbExclamation, "Diversity tree"
+            MsgBox "Family '" & titles(i) & "' has no codes." & vbCrLf & vbCrLf & _
+                   "Codes go directly under the title, starting on row " & _
+                   DIV_FIRST_CODE_ROW & ".", vbExclamation, "Diversity tree"
             Exit Sub
         End If
         Set codes(i) = codeList
         sizes(i) = codeList.Count
+        counts = counts & "   " & titles(i) & "   " & sizes(i) & vbCrLf
         total = total * sizes(i)
         If total > DIV_MAX_COMBOS Then
             MsgBox "That would produce more than " & DIV_MAX_COMBOS & " combinations." & vbCrLf & _
@@ -1830,6 +1842,7 @@ Public Sub DSI_DiversityTree()
             v = UCase$(Trim$(CStr(ws.Cells(rr, 1).Value)))
             If Len(v) = 0 Then Exit Do
             If v = "EXCLUDE" Or v = "REQUIRE" Then
+                ruleRowsSeen = ruleRowsSeen + 1
                 Set present = ParseRuleCodes(CStr(ws.Cells(rr, 2).Value))
                 ' The grey example rows use placeholder names; skip them.
                 If present.Count > 0 And Not present.Exists("CODE1") Then
@@ -1930,14 +1943,22 @@ Public Sub DSI_DiversityTree()
     wsT.Range("A2").Select
     Application.ScreenUpdating = True
 
-    MsgBox "Diversity tree built." & vbCrLf & vbCrLf & _
-           "Families      " & famCount & vbCrLf & _
-           "Combinations  " & total & vbCrLf & _
-           "Rules applied " & nRules & vbCrLf & _
-           "Removed       " & nKilled & vbCrLf & _
-           "Valid         " & (total - nKilled) & vbCrLf & vbCrLf & _
-           "Sheets: " & DIV_TREE & " (indented) and " & DIV_LIST & " (filterable)", _
-           vbInformation, "Diversity tree"
+    ' The per-family code counts are shown because they are the one number that
+    ' reveals a mis-typed input sheet. A family read as 1 code instead of 2
+    ' halves the tree, and without this the total alone looks plausible.
+    v = "Diversity tree built." & vbCrLf & vbCrLf & _
+        "Codes found per family:" & vbCrLf & counts & vbCrLf & _
+        "Combinations  " & total & vbCrLf & _
+        "Rules applied " & nRules & vbCrLf & _
+        "Removed       " & nKilled & vbCrLf & _
+        "Valid         " & (total - nKilled) & vbCrLf & vbCrLf & _
+        "Sheets: " & DIV_TREE & " (indented) and " & DIV_LIST & " (filterable)"
+    If ruleRowsSeen > nRules Then
+        v = v & vbCrLf & vbCrLf & "WARNING: " & (ruleRowsSeen - nRules) & _
+            " rule row(s) were ignored because the CODES cell was empty" & vbCrLf & _
+            "or still held the placeholder text."
+    End If
+    MsgBox v, vbInformation, "Diversity tree"
     Exit Sub
 Fail:
     Application.ScreenUpdating = True
@@ -2183,8 +2204,9 @@ Public Sub DSI_DiversityExample()
                 "DAB00|DAB13", "DHB09|DHB11")
 
     ws.Range("A1").Value = "TITLE"
-    ws.Range("A2").Value = "CODES"
-    ws.Range("A1:A2").Font.Bold = True
+    ws.Cells(DIV_FIRST_CODE_ROW, 1).Value = "CODES"
+    ws.Range("A1").Font.Bold = True
+    ws.Cells(DIV_FIRST_CODE_ROW, 1).Font.Bold = True
     ws.Columns(1).ColumnWidth = 10
 
     For col = LBound(fams) To UBound(fams)
